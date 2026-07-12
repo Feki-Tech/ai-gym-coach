@@ -248,17 +248,21 @@ Uneven alignment (all bilateral moves): compare L vs R joint angles each phase; 
 
 ## 11. Reference implementation
 
-See **`pose_coach.py`** (same folder) — runnable prototype v2:
+See **`pose_coach.py`** (repo root) — runnable prototype v3:
 - MediaPipe Tasks Pose Landmarker (webcam or video file), One Euro filtering, joint angles
 - **All 9 exercises**: FSM rep counting/tempo for squat, push-up, bench, deadlift, lunge, shoulder press, curl, pull-up (concentric-first handling for curl/pull-up) + timed **plank** hold with body-line monitoring
 - Per-exercise live form rules (back lean/rounding, knee valgus, elbow flare/swing, unevenness, chin-over-bar, body sag) + per-rep depth/tempo checks and scores
+- **Auto exercise detection** (`--exercise auto`): rule-based classifier over a 2 s sliding window of skeleton features (trunk angle, joint ROMs, wrist-overhead ratio, shoulder vs wrist displacement, knee split), majority-vote lock after 3 agreeing votes — the §4.3 stage-2 MVP. Detects 8 of 9 (bench press reads as push-up from skeleton alone → manual)
+- **Fatigue estimation** (§6): concentric velocity proxy = primary-angle ROM / concentric time; warns once when the average of the last 2 reps drops >20 % below the best of the first 3; `velocity_loss_pct` stored per session
 - **Voice coaching** via pyttsx3 (background TTS thread, prioritized + rate-limited cues, spoken rep counts)
-- **Workout logging** to `workout_log.json`: per-rep metrics, fault counts, session summaries
+- **Workout logging + progress**: per-rep metrics (incl. velocity), fault counts, session summaries in `workout_log.json`; `--stats` renders a per-exercise dashboard (sessions, total reps, score-trend sparklines, top faults, plank hold bests)
+- Headless/Docker mode (`--headless`, `--output annotated.mp4`), CI-tested (13 selftests)
 
 ```
 pip install mediapipe opencv-python numpy pyttsx3
 python pose_coach.py --exercise squat            # webcam + voice
-python pose_coach.py --exercise plank --no-voice
+python pose_coach.py --exercise auto             # recognize the movement
 python pose_coach.py --exercise deadlift --video set1.mp4
+python pose_coach.py --stats                     # progress dashboard
 python pose_coach.py --selftest                  # verify without a camera
 ```

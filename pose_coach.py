@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -284,6 +285,109 @@ class PlankTracker:
         return False
 
 
+# ------------------------------------------------------ auto exercise detect
+def frame_features(ang: dict, pts: np.ndarray) -> dict:
+    """Per-frame features consumed by AutoDetector (kept minimal so tests
+    can synthesize them without full skeletons)."""
+    p = pts[:, :3]
+    sho_y = (p[L_SHO][1] + p[R_SHO][1]) / 2
+    hip_y = (p[L_HIP][1] + p[R_HIP][1]) / 2
+    wri_y = (p[L_WRI][1] + p[R_WRI][1]) / 2
+    torso = max(abs(hip_y - sho_y), 1e-3)
+    return {
+        "trunk": ang["trunk_lean"], "knee": ang["knee"],
+        "elbow": ang["elbow"], "hip": ang["hip"],
+        "sho_y": sho_y, "wri_y": wri_y, "torso": torso,
+        "overhead": wri_y < sho_y - 0.03,          # image y grows downward
+        "knee_split": abs(p[L_KNE][1] - p[R_KNE][1]) / torso,
+    }
+
+
+class AutoDetector:
+    """Rule-based exercise classifier over a sliding window of skeleton
+    features (design doc §4.3 stage-2 MVP). Locks after 3 agreeing votes.
+
+    Not detectable from skeleton alone: bench press (indistinguishable
+    from push-up without bench context) — select it manually.
+    """
+
+    WINDOW_S, VOTE_EVERY_S, NEED_AGREE = 2.0, 0.5, 3
+
+    def __init__(self):
+        self.buf: deque = deque()
+        self.votes: deque = deque(maxlen=self.NEED_AGREE)
+        self.next_vote_t = self.WINDOW_S
+
+    def update(self, feat: dict, t: float) -> str | None:
+        self.buf.append((t, feat))
+        while self.buf and t - self.buf[0][0] > self.WINDOW_S:
+            self.buf.popleft()
+        if t < self.next_vote_t or len(self.buf) < 20:
+            return None
+        self.next_vote_t = t + self.VOTE_EVERY_S
+        vote = self._classify()
+        self.votes.append(vote)
+        if (len(self.votes) == self.NEED_AGREE and vote
+                and all(v == vote for v in self.votes)):
+            return vote
+        return None
+
+    def _classify(self) -> str | None:
+        f = [x for _, x in self.buf]
+        get = lambda k: [x[k] for x in f]
+        rom = lambda k: max(get(k)) - min(get(k))
+        torso = sum(get("torso")) / len(f)
+        trunk_mean, trunk_max = sum(get("trunk")) / len(f), max(get("trunk"))
+        rom_knee, rom_elbow, rom_hip = rom("knee"), rom("elbow"), rom("hip")
+        overhead = sum(x["overhead"] for x in f) / len(f)
+        disp_sho, disp_wri = rom("sho_y") / torso, rom("wri_y") / torso
+        knee_split = max(get("knee_split"))
+
+        if trunk_mean > 55:                        # body horizontal
+            return "pushup" if rom_elbow > 25 else "plank"
+        if overhead > 0.7 and rom_elbow > 30:      # hands overhead
+            return "pullup" if disp_sho > 1.3 * disp_wri else "shoulder_press"
+        if rom_knee > 35:                          # legs driving
+            if trunk_max > 55:
+                return "deadlift"
+            if knee_split > 0.35:
+                return "lunge"
+            return "squat"
+        if trunk_max > 55 and rom_hip > 30:        # hip hinge, stiff knees
+            return "deadlift"
+        if rom_elbow > 40 and overhead < 0.3:      # arms only, below head
+            return "curl"
+        return None
+
+
+# ------------------------------------------------------------------ fatigue
+FATIGUE_MSG = "You're slowing down — keep form tight or end the set."
+
+
+class FatigueMonitor:
+    """Velocity-based fatigue: warn when concentric speed drops >20%
+    against the best of the first three reps."""
+
+    def __init__(self, threshold=0.20):
+        self.threshold = threshold
+        self.vels: list[float] = []
+        self.warned = False
+        self.loss = 0.0
+
+    def add(self, velocity: float) -> bool:
+        """Feed one rep's concentric velocity; True => fire fatigue cue."""
+        self.vels.append(velocity)
+        if len(self.vels) < 4:
+            return False
+        base = max(self.vels[:3])
+        cur = sum(self.vels[-2:]) / 2
+        self.loss = max(0.0, 1 - cur / base) if base > 0 else 0.0
+        if self.loss > self.threshold and not self.warned:
+            self.warned = True
+            return True
+        return False
+
+
 # -------------------------------------------------------------- form rules
 FAULT_MSGS = {  # fault -> (priority: lower = more urgent, message, penalty)
     "back_lean": (0, "Straighten your back — chest up!", 25),
@@ -443,12 +547,13 @@ class WorkoutLog:
             "plank": None,
         }
 
-    def add_rep(self, ev: RepEvent):
+    def add_rep(self, ev: RepEvent, velocity: float | None = None):
         self.session["reps"].append({
             "n": ev.count, "score": ev.score,
             "eccentric_s": round(ev.eccentric_s, 2),
             "concentric_s": round(ev.concentric_s, 2),
             "min_angle": round(ev.min_angle, 1),
+            "velocity": round(velocity, 1) if velocity is not None else None,
             "faults": ev.faults,
         })
 
@@ -465,6 +570,7 @@ class WorkoutLog:
             "avg_score": round(sum(r["score"] for r in reps) / len(reps), 1) if reps else None,
             "avg_concentric_s": round(sum(r["concentric_s"] for r in reps) / len(reps), 2) if reps else None,
             "fault_counts": self._fault_counts(reps),
+            "velocity_loss_pct": self._velocity_loss(reps),
         }
         history = []
         if os.path.exists(self.path):
@@ -486,6 +592,15 @@ class WorkoutLog:
                 counts[f] = counts.get(f, 0) + 1
         return counts
 
+    @staticmethod
+    def _velocity_loss(reps) -> float | None:
+        vels = [r.get("velocity") for r in reps if r.get("velocity")]
+        if len(vels) < 4:
+            return None
+        base = max(vels[:3])
+        cur = sum(vels[-2:]) / 2
+        return round(max(0.0, 1 - cur / base) * 100, 1) if base > 0 else None
+
 
 def print_summary(s: dict):
     print("\n=== Session summary ===")
@@ -497,12 +612,59 @@ def print_summary(s: dict):
     if sm["reps"]:
         print(f"Reps: {sm['reps']}   avg score: {sm['avg_score']}/100   "
               f"avg concentric: {sm['avg_concentric_s']}s")
+        if sm.get("velocity_loss_pct") is not None:
+            print(f"Velocity loss across set: {sm['velocity_loss_pct']}%"
+                  + ("  (fatigue!)" if sm["velocity_loss_pct"] > 20 else ""))
         if sm["fault_counts"]:
             print("Faults:", ", ".join(f"{k}×{v}" for k, v in
                                        sorted(sm["fault_counts"].items())))
         else:
             print("Faults: none — great set!")
     print(f"Logged to workout log.")
+
+
+# ---------------------------------------------------------- stats dashboard
+def sparkline(values) -> str:
+    bars = "▁▂▃▄▅▆▇█"
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return bars[4] * len(values)
+    return "".join(bars[int((v - lo) / (hi - lo) * (len(bars) - 1))] for v in values)
+
+
+def print_stats(log_path: str):
+    """Progress dashboard aggregated from the workout log."""
+    if not os.path.exists(log_path):
+        print(f"No workout log at {log_path} yet — go train!")
+        return
+    with open(log_path, encoding="utf-8") as fh:
+        history = json.load(fh)
+    by_ex: dict[str, list] = {}
+    for s in history:
+        by_ex.setdefault(s.get("exercise", "?"), []).append(s)
+
+    print(f"=== Progress ({len(history)} sessions) ===")
+    for ex, sessions in sorted(by_ex.items()):
+        print(f"\n{ex.upper()}  —  {len(sessions)} session(s)")
+        holds = [s["plank"]["total_hold_s"] for s in sessions if s.get("plank")]
+        if holds:
+            print(f"  hold time per session: {sparkline(holds)}  "
+                  f"last {holds[-1]}s, best {max(holds)}s")
+        scores = [s["summary"]["avg_score"] for s in sessions
+                  if s.get("summary", {}).get("avg_score") is not None]
+        total_reps = sum(s.get("summary", {}).get("reps", 0) for s in sessions)
+        if scores:
+            trend = ("↑" if len(scores) > 1 and scores[-1] > scores[0] else
+                     "↓" if len(scores) > 1 and scores[-1] < scores[0] else "→")
+            print(f"  total reps: {total_reps}   score trend {trend}: "
+                  f"{sparkline(scores)}  last {scores[-1]}, best {max(scores)}")
+        faults: dict[str, int] = {}
+        for s in sessions:
+            for k, v in s.get("summary", {}).get("fault_counts", {}).items():
+                faults[k] = faults.get(k, 0) + v
+        if faults:
+            top = sorted(faults.items(), key=lambda kv: -kv[1])[:3]
+            print("  top faults: " + ", ".join(f"{k}×{v}" for k, v in top))
 
 
 # ------------------------------------------------------------ pose backend
@@ -543,11 +705,14 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None):
     import cv2
-    spec = SPECS[exercise]
+    auto = exercise == "auto"
+    spec = None if auto else SPECS[exercise]
+    detector = AutoDetector() if auto else None
     mp, landmarker = make_landmarker()
     smoother, feedback = SkeletonSmoother(), FeedbackEngine()
-    counter = RepCounter(spec)
-    plank = PlankTracker() if spec.mode == "hold" else None
+    counter = RepCounter(spec) if spec else None
+    plank = PlankTracker() if spec and spec.mode == "hold" else None
+    fatigue = FatigueMonitor()
     voice, log = Voice(use_voice), WorkoutLog(log_path)
 
     cap = cv2.VideoCapture(video if video else 0)
@@ -559,9 +724,13 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     fps = fps if fps and fps > 1 else 30.0
     writer = None
     quit_hint = "Ctrl+C" if headless else "q"
-    print(f"{exercise}: camera hint — {spec.camera_hint}. "
-          f"Press {quit_hint} to finish.")
-    voice.say(f"Ready for {exercise.replace('_', ' ')}. Let's go!")
+    if spec:
+        print(f"{exercise}: camera hint — {spec.camera_hint}. "
+              f"Press {quit_hint} to finish.")
+        voice.say(f"Ready for {exercise.replace('_', ' ')}. Let's go!")
+    else:
+        print(f"Auto-detect mode: start exercising. Press {quit_hint} to finish.")
+        voice.say("Start exercising, I'll recognize the movement.")
     t0, ts_ms, frame_idx, last_score = time.time(), 0, 0, None
 
     try:
@@ -580,9 +749,22 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             if pts is not None:
                 pts = smoother.update(pts, t)
                 ang = body_angles(pts)
-                faults_now = live_faults(exercise, ang, counter.state)
 
-                if plank:                                   # ---- timed hold
+                if spec is None:                            # ---- auto-detect
+                    det = detector.update(frame_features(ang, pts), t)
+                    hud1 = "AUTO  detecting exercise..."
+                    hud2 = (f"knee: {ang['knee']:5.1f}   "
+                            f"elbow: {ang['elbow']:5.1f}   "
+                            f"trunk: {ang['trunk_lean']:4.1f}")
+                    if det:
+                        exercise, spec = det, SPECS[det]
+                        counter = RepCounter(spec)
+                        plank = PlankTracker() if spec.mode == "hold" else None
+                        print(f"Auto-detected exercise: {det} "
+                              f"(camera hint — {spec.camera_hint})")
+                        voice.say(f"{det.replace('_', ' ')} detected. Let's go!")
+                elif plank:                                 # ---- timed hold
+                    faults_now = live_faults(exercise, ang, counter.state)
                     if plank.update(ang["body_line"], t):
                         faults_now.append("body_sag")
                     msg = feedback.push(faults_now, t)
@@ -592,6 +774,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                             f"best: {plank.best:5.1f}s")
                     hud2 = f"body line: {ang['body_line']:5.1f}"
                 else:                                       # ---- rep exercise
+                    faults_now = live_faults(exercise, ang, counter.state)
                     for fault in faults_now:
                         counter.note_fault(fault)
                     ev = counter.update(ang[spec.signal], t)
@@ -602,14 +785,23 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         ev.faults = sorted(set(ev.faults) | set(rep_faults(spec, ev)))
                         ev.score = score_rep(ev)
                         last_score = ev.score
-                        log.add_rep(ev)
-                        if ev.faults:
+                        # concentric velocity proxy: ROM (deg) / lift time (s)
+                        vel = (max(spec.lockout_above - ev.min_angle, 1.0)
+                               / max(ev.concentric_s, 0.05))
+                        log.add_rep(ev, velocity=vel)
+                        if fatigue.add(vel):
+                            feedback.current = FATIGUE_MSG
+                            voice.say(FATIGUE_MSG)
+                            print(f"Fatigue warning: velocity down "
+                                  f"{fatigue.loss * 100:.0f}% from baseline")
+                        elif ev.faults:
                             cue = feedback.push(ev.faults, t)
                             voice.say(f"{ev.count}. {cue or ''}")
                         else:
                             voice.say(f"{ev.count}. {feedback.praise()}")
                         print(f"Rep {ev.count}: score {ev.score}  "
                               f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
+                              f"vel {vel:.0f} deg/s  "
                               f"min {spec.signal} {ev.min_angle:.0f}  "
                               f"faults {ev.faults or 'none'}")
                     hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
@@ -744,10 +936,18 @@ def selftest():
         with open(path, encoding="utf-8") as fh:
             hist = json.load(fh)
         assert len(hist) == 2
-        assert hist[-1]["summary"] == {"reps": 1, "avg_score": 90.0,
-                                       "avg_concentric_s": 1.0,
-                                       "fault_counts": {"too_fast": 1}}
+        sm = hist[-1]["summary"]
+        assert sm["reps"] == 1 and sm["avg_score"] == 90.0
+        assert sm["avg_concentric_s"] == 1.0
+        assert sm["fault_counts"] == {"too_fast": 1}
+        assert sm["velocity_loss_pct"] is None     # needs >=4 tracked reps
         assert s["exercise"] == "squat"
+        wl = WorkoutLog(path)                      # velocity-loss summary
+        for i, v in enumerate([100, 100, 100, 70, 60]):
+            wl.add_rep(RepEvent(i + 1, 3.0, 2.0, 1.0, 85.0, True, [], 90),
+                       velocity=v)
+        s = wl.finish("squat", 60.0)
+        assert s["summary"]["velocity_loss_pct"] == 35.0
     print("OK")
 
     print("9) voice engine:", end=" ")
@@ -772,12 +972,72 @@ def selftest():
     except ImportError:
         print("SKIPPED (mediapipe not installed)")
 
+    print("11) auto exercise detection:", end=" ")
+
+    def synth_stream(expected, **kw):
+        ad = AutoDetector()
+        osc = lambda lo, hi, t: (lo + hi) / 2 + (hi - lo) / 2 * math.cos(
+            2 * math.pi * t / 2.0)
+        for i in range(150):
+            t = i / 30.0
+            feat = {"trunk": 10.0, "knee": 170.0, "elbow": 170.0, "hip": 170.0,
+                    "sho_y": 0.3, "wri_y": 0.5, "torso": 0.25,
+                    "overhead": False, "knee_split": 0.1}
+            for k, v in kw.items():
+                feat[k] = osc(*v, t) if isinstance(v, tuple) else v
+            det = ad.update(feat, t)
+            if det:
+                assert det == expected, f"{expected} misread as {det}"
+                return
+        raise AssertionError(f"{expected} never detected")
+
+    synth_stream("squat", knee=(80, 170), hip=(90, 170), trunk=(5, 35))
+    synth_stream("pushup", trunk=75.0, elbow=(90, 160))
+    synth_stream("plank", trunk=75.0)
+    synth_stream("pullup", overhead=True, elbow=(60, 160),
+                 sho_y=(0.3, 0.6), wri_y=0.1)
+    synth_stream("shoulder_press", overhead=True, elbow=(90, 170),
+                 wri_y=(0.05, 0.25))
+    synth_stream("deadlift", knee=(120, 170), hip=(90, 170), trunk=(10, 70))
+    synth_stream("lunge", knee=(90, 170), knee_split=(0.1, 0.5))
+    synth_stream("curl", elbow=(60, 160))
+    print("OK (8 movements classified)")
+
+    print("12) fatigue monitor:", end=" ")
+    fm = FatigueMonitor()
+    fired = [fm.add(v) for v in [10, 10, 10, 9, 8, 7, 5]]
+    assert fired == [False, False, False, False, False, True, False], fired
+    assert fm.loss > 0.2
+    print("OK (warns once at >20% velocity loss)")
+
+    print("13) stats dashboard:", end=" ")
+    assert len(sparkline([1, 2, 3])) == 3 and len(set(sparkline([5, 5]))) == 1
+    import io
+    from contextlib import redirect_stdout
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "log.json")
+        for score in (70, 85):
+            wl = WorkoutLog(path)
+            wl.add_rep(RepEvent(1, 3.0, 2.0, 1.0, 85.0, True,
+                                ["knee_valgus"], score))
+            wl.finish("squat", 30.0)
+        wl = WorkoutLog(path)
+        wl.finish("plank", 40.0, plank=PlankTracker())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_stats(path)
+        out = buf.getvalue()
+        assert "SQUAT" in out and "PLANK" in out
+        assert "total reps: 2" in out and "knee_valgus" in out
+    print("OK")
+
     print("\nAll selftests passed.")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="AI Gym Coach prototype v2")
-    ap.add_argument("--exercise", choices=sorted(SPECS), default="squat")
+    ap = argparse.ArgumentParser(description="AI Gym Coach prototype v3")
+    ap.add_argument("--exercise", choices=sorted(SPECS) + ["auto"], default="squat",
+                    help="exercise to coach, or 'auto' to detect from movement")
     ap.add_argument("--video", help="video file instead of webcam")
     ap.add_argument("--no-voice", action="store_true", help="disable TTS voice")
     ap.add_argument("--headless", action="store_true",
@@ -786,10 +1046,14 @@ if __name__ == "__main__":
     ap.add_argument("--output", help="write annotated video to this file (mp4)")
     ap.add_argument("--log-file", default=DEFAULT_LOG,
                     help=f"workout log path (default {DEFAULT_LOG})")
+    ap.add_argument("--stats", action="store_true",
+                    help="print progress dashboard from the workout log and exit")
     ap.add_argument("--selftest", action="store_true", help="run without camera")
     args = ap.parse_args()
     if args.selftest:
         selftest()
+    elif args.stats:
+        print_stats(args.log_file)
     else:
         run(args.exercise, args.video, not args.no_voice, args.log_file,
             headless=args.headless, output=args.output)

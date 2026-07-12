@@ -14,7 +14,9 @@ your form, and coaches you with on-screen + voice feedback.
 - **Form evaluation** — biomechanical rules per exercise: back rounding, knee valgus, insufficient depth, elbow flare/swing, uneven pressing, chin-over-bar, body sag…
 - **Smoothing** — One Euro filter per keypoint with visibility gating
 - **Voice coaching** — prioritized, rate-limited cues via TTS ("Straighten your back", "Slow down", "Great form!")
-- **Workout log** — per-rep scores, tempo, and fault statistics appended to `workout_log.json`
+- **Auto exercise detection** — `--exercise auto` recognizes the movement from the skeleton (8 of 9 exercises; bench press needs manual selection)
+- **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
+- **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
 
 ## Quick start
 
@@ -22,8 +24,10 @@ your form, and coaches you with on-screen + voice feedback.
 pip install -r requirements.txt
 
 python pose_coach.py --exercise squat            # webcam + voice
+python pose_coach.py --exercise auto             # detect the exercise for me
 python pose_coach.py --exercise plank --no-voice
 python pose_coach.py --exercise deadlift --video set1.mp4
+python pose_coach.py --stats                     # progress dashboard from the log
 python pose_coach.py --selftest                  # verify install, no camera needed
 ```
 
@@ -81,9 +85,11 @@ deployment, roadmap): **[docs/DESIGN.md](docs/DESIGN.md)**.
 
 ## Roadmap
 
+- [x] Rule-based exercise auto-detection (`--exercise auto`)
+- [x] Fatigue estimation from velocity loss
+- [x] Progress dashboard (`--stats`)
 - [ ] ML exercise auto-classification (GRU/ST-GCN on normalized keypoints)
 - [ ] DTW comparison against expert reference reps
-- [ ] Fatigue estimation from velocity loss
 - [ ] Android app (MediaPipe Tasks, Kotlin)
 
 ## Disclaimer
