@@ -14,7 +14,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     /// Called on the camera queue with the detected skeleton (nil when no
     /// person is visible) and the pixel-buffer size for overlay mapping.
-    var onFrame: ((Skeleton?, CGSize) -> Void)?
+    var onFrame: ((CoachCore.Skeleton?, CGSize) -> Void)?
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -86,7 +86,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         onFrame?(Self.skeleton(from: obs), size)
     }
 
-    static let jointMap: [(Joint, VNHumanBodyPoseObservation.JointName)] = [
+    static let jointMap: [(CoachCore.Joint, VNHumanBodyPoseObservation.JointName)] = [
         (.nose, .nose), (.leftEar, .leftEar), (.rightEar, .rightEar),
         (.leftShoulder, .leftShoulder), (.rightShoulder, .rightShoulder),
         (.leftElbow, .leftElbow), (.rightElbow, .rightElbow),
@@ -97,15 +97,17 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     ]
 
     /// Vision uses a bottom-left origin; CoachCore uses top-left (y-down).
-    static func skeleton(from obs: VNHumanBodyPoseObservation) -> Skeleton {
-        var skel = [Landmark](repeating: Landmark(x: 0, y: 0, confidence: 0),
-                              count: Joint.allCases.count)
+    static func skeleton(from obs: VNHumanBodyPoseObservation) -> CoachCore.Skeleton {
+        var skel = [CoachCore.Landmark](
+            repeating: CoachCore.Landmark(x: 0, y: 0, confidence: 0),
+            count: CoachCore.Joint.allCases.count)
         guard let pts = try? obs.recognizedPoints(.all) else { return skel }
         for (joint, name) in jointMap {
             if let p = pts[name] {
-                skel[joint.rawValue] = Landmark(x: Double(p.location.x),
-                                                y: 1 - Double(p.location.y),
-                                                confidence: Double(p.confidence))
+                skel[joint.rawValue] = CoachCore.Landmark(
+                    x: Double(p.location.x),
+                    y: 1 - Double(p.location.y),
+                    confidence: Double(p.confidence))
             }
         }
         return skel
