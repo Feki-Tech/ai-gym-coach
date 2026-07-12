@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "Redresse ton dos.";
+"fault.back_round" = "Garde le dos plat — poitrine haute.";
+"fault.body_sag" = "Garde le corps bien aligné.";
+"fault.knees_cave" = "Pousse les genoux vers l'extérieur — ne les laisse pas rentrer.";
+"fault.shallow" = "Descends plus bas — amplitude complète.";
+"fault.elbow_swing" = "Garde les coudes collés au corps.";
+"fault.elbow_flare" = "Rapproche les coudes du corps.";
+"fault.torso_lean" = "Garde le buste droit.";
+"fault.lean_back" = "Ne te penche pas en arrière — gaine ton tronc.";
+"fault.uneven" = "Équilibre — les deux côtés ensemble.";
+"fault.chin" = "Tire plus haut — menton au-dessus de la barre.";
+"fault.shrug_neck" = "Garde la nuque neutre.";
+"fault.too_fast" = "Ralentis — contrôle le mouvement.";
+"coach.fatigue" = "Tu ralentis — garde une bonne technique ou termine la série.";
+"coach.praise" = "Excellente technique !";
+"coach.detected" = "%@ détecté. C'est parti !";
+
+/* Exercise names */
+"exercise.squat" = "Squat";
+"exercise.pushup" = "Pompe";
+"exercise.bench" = "Développé couché";
+"exercise.deadlift" = "Soulevé de terre";
+"exercise.lunge" = "Fente";
+"exercise.shoulder_press" = "Développé épaules";
+"exercise.curl" = "Curl biceps";
+"exercise.pullup" = "Traction";
+"exercise.plank" = "Planche";
+
+/* Camera hints */
+"hint.side" = "vue de profil";
+"hint.side_45front" = "profil ou 45° de face";
+"hint.side_head" = "profil, caméra à hauteur de tête";
+"hint.side_45knee" = "profil (45° de face pour les genoux)";
+"hint.front" = "vue de face";

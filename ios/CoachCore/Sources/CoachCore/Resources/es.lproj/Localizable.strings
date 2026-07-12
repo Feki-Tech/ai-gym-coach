@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "Endereza la espalda.";
+"fault.back_round" = "Mantén la espalda recta — pecho arriba.";
+"fault.body_sag" = "Mantén el cuerpo en línea recta.";
+"fault.knees_cave" = "Empuja las rodillas hacia afuera — que no se metan.";
+"fault.shallow" = "Baja más — rango completo de movimiento.";
+"fault.elbow_swing" = "Mantén los codos pegados al cuerpo.";
+"fault.elbow_flare" = "Acerca los codos al torso.";
+"fault.torso_lean" = "Mantén el torso erguido.";
+"fault.lean_back" = "No te inclines hacia atrás — aprieta el core.";
+"fault.uneven" = "Iguala — ambos lados a la vez.";
+"fault.chin" = "Sube más — barbilla por encima de la barra.";
+"fault.shrug_neck" = "Mantén el cuello neutro.";
+"fault.too_fast" = "Más despacio — controla el movimiento.";
+"coach.fatigue" = "Estás perdiendo velocidad — mantén la técnica o termina la serie.";
+"coach.praise" = "¡Excelente técnica!";
+"coach.detected" = "%@ detectado. ¡Vamos!";
+
+/* Exercise names */
+"exercise.squat" = "Sentadilla";
+"exercise.pushup" = "Flexión";
+"exercise.bench" = "Press de banca";
+"exercise.deadlift" = "Peso muerto";
+"exercise.lunge" = "Zancada";
+"exercise.shoulder_press" = "Press de hombros";
+"exercise.curl" = "Curl de bíceps";
+"exercise.pullup" = "Dominada";
+"exercise.plank" = "Plancha";
+
+/* Camera hints */
+"hint.side" = "vista lateral";
+"hint.side_45front" = "lateral o 45° frontal";
+"hint.side_head" = "lateral, cámara a la altura de la cabeza";
+"hint.side_45knee" = "lateral (45° frontal para las rodillas)";
+"hint.front" = "vista frontal";

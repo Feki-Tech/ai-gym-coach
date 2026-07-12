@@ -9,8 +9,10 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 12) {
-                    card("auto", title: "Auto-detect", icon: "wand.and.stars",
-                         subtitle: "I'll recognize the movement")
+                    card("auto", title: NSLocalizedString("Auto-detect", comment: ""),
+                         icon: "wand.and.stars",
+                         subtitle: NSLocalizedString("I'll recognize the movement",
+                                                     comment: ""))
                     ForEach(exerciseOrder, id: \.self) { ex in
                         card(ex, title: displayName(ex), icon: icon(for: ex),
                              subtitle: specs[ex]?.cameraHint ?? "")

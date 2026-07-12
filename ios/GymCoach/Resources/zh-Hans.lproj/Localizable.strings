@@ -1,0 +1,45 @@
+/* Home */
+"AI Gym Coach" = "AI 健身教练";
+"Auto-detect" = "自动识别";
+"I'll recognize the movement" = "自动识别你的动作";
+"Voice coaching" = "语音指导";
+
+/* Workout */
+"Ready. Let's go!" = "准备好了，开始吧！";
+"Detecting exercise…" = "正在识别动作…";
+"phase.IDLE" = "准备";
+"phase.DESCENT" = "下降";
+"phase.BOTTOM" = "底部";
+"phase.ASCENT" = "上升";
+"Reps %lld" = "次数 %lld";
+"Score %lld" = "得分 %lld";
+"Hold %.1f s   ·   best %.1f s" = "坚持 %.1f 秒 · 最佳 %.1f 秒";
+"End set" = "结束这组";
+
+/* Summary */
+"Set complete" = "本组完成";
+"Set" = "本组";
+"Exercise" = "动作";
+"Duration" = "时长";
+"Total hold" = "总坚持时间";
+"Best streak" = "最长连续";
+"Reps" = "次数";
+"Average score" = "平均得分";
+"Velocity loss" = "速度下降";
+"Focus points" = "改进要点";
+"×%lld" = "×%lld";
+"Clean set — no recurring faults!" = "完美的一组——没有重复出现的问题！";
+"Done" = "完成";
+
+/* History */
+"Progress" = "进度";
+"Score trend" = "得分趋势";
+"Sessions" = "训练记录";
+"No workouts yet" = "还没有训练记录";
+"Finish a set and it will show up here." = "完成一组训练后会显示在这里。";
+"Complete two scored sessions of %@ to see a trend." = "完成两次有评分的%@训练即可查看趋势。";
+"%lld reps" = "%lld 次";
+"score %lld" = "得分 %lld";
+"vel. loss %.0f%%" = "速度下降 %.0f%%";
+"hold %.0f s" = "坚持 %.0f 秒";
+"best %.0f s" = "最佳 %.0f 秒";

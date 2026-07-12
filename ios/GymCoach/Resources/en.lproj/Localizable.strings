@@ -1,0 +1,45 @@
+/* Home */
+"AI Gym Coach" = "AI Gym Coach";
+"Auto-detect" = "Auto-detect";
+"I'll recognize the movement" = "I'll recognize the movement";
+"Voice coaching" = "Voice coaching";
+
+/* Workout */
+"Ready. Let's go!" = "Ready. Let's go!";
+"Detecting exercise…" = "Detecting exercise…";
+"phase.IDLE" = "Ready";
+"phase.DESCENT" = "Down";
+"phase.BOTTOM" = "Bottom";
+"phase.ASCENT" = "Up";
+"Reps %lld" = "Reps %lld";
+"Score %lld" = "Score %lld";
+"Hold %.1f s   ·   best %.1f s" = "Hold %.1f s   ·   best %.1f s";
+"End set" = "End set";
+
+/* Summary */
+"Set complete" = "Set complete";
+"Set" = "Set";
+"Exercise" = "Exercise";
+"Duration" = "Duration";
+"Total hold" = "Total hold";
+"Best streak" = "Best streak";
+"Reps" = "Reps";
+"Average score" = "Average score";
+"Velocity loss" = "Velocity loss";
+"Focus points" = "Focus points";
+"×%lld" = "×%lld";
+"Clean set — no recurring faults!" = "Clean set — no recurring faults!";
+"Done" = "Done";
+
+/* History */
+"Progress" = "Progress";
+"Score trend" = "Score trend";
+"Sessions" = "Sessions";
+"No workouts yet" = "No workouts yet";
+"Finish a set and it will show up here." = "Finish a set and it will show up here.";
+"Complete two scored sessions of %@ to see a trend." = "Complete two scored sessions of %@ to see a trend.";
+"%lld reps" = "%lld reps";
+"score %lld" = "score %lld";
+"vel. loss %.0f%%" = "vel. loss %.0f%%";
+"hold %.0f s" = "hold %.0f s";
+"best %.0f s" = "best %.0f s";

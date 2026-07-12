@@ -42,7 +42,7 @@ final class WorkoutViewModel: ObservableObject {
             }
         }
         camera.start()
-        if voiceOn { speech.say("Ready. Let's go!") }
+        if voiceOn { speech.say(NSLocalizedString("Ready. Let's go!", comment: "")) }
     }
 
     func endSet() {
@@ -102,13 +102,14 @@ struct WorkoutView: View {
                 HStack {
                     Text(displayName(ex)).font(.headline)
                     Spacer()
-                    Text(vm.hud.phase.capitalized)
+                    Text(LocalizedStringKey("phase.\(vm.hud.phase)"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 if let hold = vm.hud.plankHold {
-                    Text(String(format: "Hold %.1f s   ·   best %.1f s",
-                                hold, vm.hud.plankBest ?? 0))
+                    Text(String(format: NSLocalizedString(
+                        "Hold %.1f s   ·   best %.1f s", comment: ""),
+                        hold, vm.hud.plankBest ?? 0))
                         .font(.title3.monospacedDigit())
                 } else {
                     HStack(spacing: 16) {

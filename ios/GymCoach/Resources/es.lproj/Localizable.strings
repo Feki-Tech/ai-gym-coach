@@ -1,0 +1,45 @@
+/* Home */
+"AI Gym Coach" = "AI Gym Coach";
+"Auto-detect" = "Detección automática";
+"I'll recognize the movement" = "Reconoceré el movimiento";
+"Voice coaching" = "Voz del entrenador";
+
+/* Workout */
+"Ready. Let's go!" = "Listo. ¡Vamos!";
+"Detecting exercise…" = "Detectando ejercicio…";
+"phase.IDLE" = "Listo";
+"phase.DESCENT" = "Bajada";
+"phase.BOTTOM" = "Abajo";
+"phase.ASCENT" = "Subida";
+"Reps %lld" = "Reps %lld";
+"Score %lld" = "Puntos %lld";
+"Hold %.1f s   ·   best %.1f s" = "Aguanta %.1f s   ·   mejor %.1f s";
+"End set" = "Terminar serie";
+
+/* Summary */
+"Set complete" = "Serie completada";
+"Set" = "Serie";
+"Exercise" = "Ejercicio";
+"Duration" = "Duración";
+"Total hold" = "Tiempo total";
+"Best streak" = "Mejor racha";
+"Reps" = "Repeticiones";
+"Average score" = "Puntuación media";
+"Velocity loss" = "Pérdida de velocidad";
+"Focus points" = "Puntos a mejorar";
+"×%lld" = "×%lld";
+"Clean set — no recurring faults!" = "¡Serie limpia, sin fallos recurrentes!";
+"Done" = "Listo";
+
+/* History */
+"Progress" = "Progreso";
+"Score trend" = "Tendencia de puntuación";
+"Sessions" = "Sesiones";
+"No workouts yet" = "Aún no hay entrenamientos";
+"Finish a set and it will show up here." = "Termina una serie y aparecerá aquí.";
+"Complete two scored sessions of %@ to see a trend." = "Completa dos sesiones puntuadas de %@ para ver la tendencia.";
+"%lld reps" = "%lld reps";
+"score %lld" = "puntos %lld";
+"vel. loss %.0f%%" = "pérdida vel. %.0f%%";
+"hold %.0f s" = "aguante %.0f s";
+"best %.0f s" = "mejor %.0f s";

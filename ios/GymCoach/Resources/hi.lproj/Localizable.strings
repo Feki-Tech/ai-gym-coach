@@ -1,0 +1,45 @@
+/* Home */
+"AI Gym Coach" = "AI जिम कोच";
+"Auto-detect" = "स्वतः पहचान";
+"I'll recognize the movement" = "मैं मूवमेंट पहचान लूँगा";
+"Voice coaching" = "वॉइस कोचिंग";
+
+/* Workout */
+"Ready. Let's go!" = "तैयार। चलिए शुरू करें!";
+"Detecting exercise…" = "एक्सरसाइज़ पहचानी जा रही है…";
+"phase.IDLE" = "तैयार";
+"phase.DESCENT" = "नीचे";
+"phase.BOTTOM" = "सबसे नीचे";
+"phase.ASCENT" = "ऊपर";
+"Reps %lld" = "रेप्स %lld";
+"Score %lld" = "स्कोर %lld";
+"Hold %.1f s   ·   best %.1f s" = "होल्ड %.1f से. · सर्वश्रेष्ठ %.1f से.";
+"End set" = "सेट समाप्त करें";
+
+/* Summary */
+"Set complete" = "सेट पूरा हुआ";
+"Set" = "सेट";
+"Exercise" = "एक्सरसाइज़";
+"Duration" = "अवधि";
+"Total hold" = "कुल होल्ड";
+"Best streak" = "सबसे लंबा होल्ड";
+"Reps" = "रेप्स";
+"Average score" = "औसत स्कोर";
+"Velocity loss" = "गति में कमी";
+"Focus points" = "सुधार के बिंदु";
+"×%lld" = "×%lld";
+"Clean set — no recurring faults!" = "बेहतरीन सेट — कोई दोहराई गई गलती नहीं!";
+"Done" = "हो गया";
+
+/* History */
+"Progress" = "प्रगति";
+"Score trend" = "स्कोर ट्रेंड";
+"Sessions" = "सेशन";
+"No workouts yet" = "अभी कोई वर्कआउट नहीं";
+"Finish a set and it will show up here." = "एक सेट पूरा करें, वह यहाँ दिखेगा।";
+"Complete two scored sessions of %@ to see a trend." = "ट्रेंड देखने के लिए %@ के दो स्कोर वाले सेशन पूरे करें।";
+"%lld reps" = "%lld रेप्स";
+"score %lld" = "स्कोर %lld";
+"vel. loss %.0f%%" = "गति में कमी %.0f%%";
+"hold %.0f s" = "होल्ड %.0f से.";
+"best %.0f s" = "सर्वश्रेष्ठ %.0f से.";

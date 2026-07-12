@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "AI 健身教练";
+"NSCameraUsageDescription" = "AI 健身教练通过摄像头实时分析你的运动姿势。视频完全在本机处理，不会被存储或上传。";

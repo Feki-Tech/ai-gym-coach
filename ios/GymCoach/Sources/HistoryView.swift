@@ -70,15 +70,20 @@ struct HistoryView: View {
             }
             HStack(spacing: 12) {
                 if let plank = rec.plank {
-                    Text(String(format: "hold %.0f s", plank.totalHoldS))
-                    Text(String(format: "best %.0f s", plank.bestStreakS))
+                    Text(String(format: NSLocalizedString("hold %.0f s",
+                                                          comment: ""),
+                                plank.totalHoldS))
+                    Text(String(format: NSLocalizedString("best %.0f s",
+                                                          comment: ""),
+                                plank.bestStreakS))
                 } else {
                     Text("\(rec.summary.reps) reps")
                     if let s = rec.summary.avgScore {
                         Text("score \(Int(s))")
                     }
                     if let v = rec.summary.velocityLossPct {
-                        Text(String(format: "vel. loss %.0f%%", v))
+                        Text(String(format: NSLocalizedString("vel. loss %.0f%%",
+                                                              comment: ""), v))
                     }
                 }
             }

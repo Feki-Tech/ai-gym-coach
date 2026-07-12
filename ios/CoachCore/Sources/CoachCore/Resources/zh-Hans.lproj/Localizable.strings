@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "挺直背部。";
+"fault.back_round" = "保持背部平直——挺胸。";
+"fault.body_sag" = "保持身体成一条直线。";
+"fault.knees_cave" = "膝盖向外打开——不要内扣。";
+"fault.shallow" = "蹲得再深一点——完整幅度。";
+"fault.elbow_swing" = "手肘贴紧身体两侧。";
+"fault.elbow_flare" = "手肘收拢，贴近身体。";
+"fault.torso_lean" = "保持上身直立。";
+"fault.lean_back" = "不要向后仰——收紧核心。";
+"fault.uneven" = "两边保持一致。";
+"fault.chin" = "拉高一点——下巴过杠。";
+"fault.shrug_neck" = "保持颈部中立。";
+"fault.too_fast" = "慢一点——控制动作。";
+"coach.fatigue" = "你的速度在下降——保持动作质量，或者结束这组。";
+"coach.praise" = "动作标准！";
+"coach.detected" = "检测到%@。开始吧！";
+
+/* Exercise names */
+"exercise.squat" = "深蹲";
+"exercise.pushup" = "俯卧撑";
+"exercise.bench" = "卧推";
+"exercise.deadlift" = "硬拉";
+"exercise.lunge" = "弓步蹲";
+"exercise.shoulder_press" = "肩上推举";
+"exercise.curl" = "弯举";
+"exercise.pullup" = "引体向上";
+"exercise.plank" = "平板支撑";
+
+/* Camera hints */
+"hint.side" = "侧面视角";
+"hint.side_45front" = "侧面或45°正面";
+"hint.side_head" = "侧面，摄像头与头部同高";
+"hint.side_45knee" = "侧面（膝盖跟踪用45°正面）";
+"hint.front" = "正面视角";

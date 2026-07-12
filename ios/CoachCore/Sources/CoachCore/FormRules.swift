@@ -2,24 +2,29 @@
 
 import Foundation
 
+/// Localized engine string (Localizable.strings in this package, 5 languages).
+func loc(_ key: String) -> String {
+    NSLocalizedString(key, bundle: .module, comment: "")
+}
+
 /// fault id -> (priority, message, score penalty). Lower priority = said first.
 public let faultMessages: [String: (priority: Int, message: String, penalty: Int)] = [
-    "back_lean": (0, "Straighten your back.", 30),
-    "back_round": (0, "Keep your back flat — chest up.", 30),
-    "body_sag": (0, "Keep your body in a straight line.", 25),
-    "knees_cave": (0, "Push your knees out — don't let them cave in.", 25),
-    "shallow": (1, "Go deeper — full range of motion.", 20),
-    "elbow_swing": (1, "Keep your elbows pinned to your sides.", 20),
-    "elbow_flare": (1, "Tuck your elbows closer to your body.", 15),
-    "torso_lean": (1, "Keep your torso upright.", 15),
-    "lean_back": (1, "Don't lean back — brace your core.", 15),
-    "uneven": (1, "Even it out — both sides together.", 15),
-    "chin": (1, "Pull higher — chin over the bar.", 15),
-    "shrug_neck": (1, "Keep your neck neutral.", 10),
-    "too_fast": (2, "Slow down — control the movement.", 10),
+    "back_lean": (0, loc("fault.back_lean"), 30),
+    "back_round": (0, loc("fault.back_round"), 30),
+    "body_sag": (0, loc("fault.body_sag"), 25),
+    "knees_cave": (0, loc("fault.knees_cave"), 25),
+    "shallow": (1, loc("fault.shallow"), 20),
+    "elbow_swing": (1, loc("fault.elbow_swing"), 20),
+    "elbow_flare": (1, loc("fault.elbow_flare"), 15),
+    "torso_lean": (1, loc("fault.torso_lean"), 15),
+    "lean_back": (1, loc("fault.lean_back"), 15),
+    "uneven": (1, loc("fault.uneven"), 15),
+    "chin": (1, loc("fault.chin"), 15),
+    "shrug_neck": (1, loc("fault.shrug_neck"), 10),
+    "too_fast": (2, loc("fault.too_fast"), 10),
 ]
 
-public let fatigueMessage = "You're slowing down — keep form tight or end the set."
+public let fatigueMessage = loc("coach.fatigue")
 
 @inline(__always)
 private func moving(_ s: RepState) -> Bool { s != .idle }
@@ -99,7 +104,7 @@ public final class FeedbackEngine {
     }
 
     public func praise() -> String {
-        current = "Great form!"
+        current = loc("coach.praise")
         return current
     }
 }

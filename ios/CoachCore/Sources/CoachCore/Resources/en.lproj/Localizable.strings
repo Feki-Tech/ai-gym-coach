@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "Straighten your back.";
+"fault.back_round" = "Keep your back flat — chest up.";
+"fault.body_sag" = "Keep your body in a straight line.";
+"fault.knees_cave" = "Push your knees out — don't let them cave in.";
+"fault.shallow" = "Go deeper — full range of motion.";
+"fault.elbow_swing" = "Keep your elbows pinned to your sides.";
+"fault.elbow_flare" = "Tuck your elbows closer to your body.";
+"fault.torso_lean" = "Keep your torso upright.";
+"fault.lean_back" = "Don't lean back — brace your core.";
+"fault.uneven" = "Even it out — both sides together.";
+"fault.chin" = "Pull higher — chin over the bar.";
+"fault.shrug_neck" = "Keep your neck neutral.";
+"fault.too_fast" = "Slow down — control the movement.";
+"coach.fatigue" = "You're slowing down — keep form tight or end the set.";
+"coach.praise" = "Great form!";
+"coach.detected" = "%@ detected. Let's go!";
+
+/* Exercise names */
+"exercise.squat" = "Squat";
+"exercise.pushup" = "Push-up";
+"exercise.bench" = "Bench press";
+"exercise.deadlift" = "Deadlift";
+"exercise.lunge" = "Lunge";
+"exercise.shoulder_press" = "Shoulder press";
+"exercise.curl" = "Bicep curl";
+"exercise.pullup" = "Pull-up";
+"exercise.plank" = "Plank";
+
+/* Camera hints */
+"hint.side" = "side view";
+"hint.side_45front" = "side or 45° front";
+"hint.side_head" = "side, camera at head height";
+"hint.side_45knee" = "side (45° front for knee tracking)";
+"hint.front" = "front view";

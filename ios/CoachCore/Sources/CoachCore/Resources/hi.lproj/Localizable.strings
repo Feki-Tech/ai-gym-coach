@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "अपनी पीठ सीधी करें।";
+"fault.back_round" = "पीठ सपाट रखें — छाती ऊपर।";
+"fault.body_sag" = "शरीर को सीधी रेखा में रखें।";
+"fault.knees_cave" = "घुटनों को बाहर की ओर रखें — अंदर न आने दें।";
+"fault.shallow" = "और नीचे जाएँ — पूरी रेंज।";
+"fault.elbow_swing" = "कोहनियाँ शरीर से सटाकर रखें।";
+"fault.elbow_flare" = "कोहनियों को शरीर के पास रखें।";
+"fault.torso_lean" = "धड़ सीधा रखें।";
+"fault.lean_back" = "पीछे न झुकें — कोर टाइट रखें।";
+"fault.uneven" = "दोनों तरफ़ बराबर रखें।";
+"fault.chin" = "और ऊपर खींचें — ठोड़ी बार के ऊपर।";
+"fault.shrug_neck" = "गर्दन सीधी रखें।";
+"fault.too_fast" = "धीरे करें — मूवमेंट पर नियंत्रण रखें।";
+"coach.fatigue" = "आपकी गति धीमी हो रही है — फ़ॉर्म बनाए रखें या सेट खत्म करें।";
+"coach.praise" = "शानदार फ़ॉर्म!";
+"coach.detected" = "%@ पहचाना गया। चलिए!";
+
+/* Exercise names */
+"exercise.squat" = "स्क्वाट";
+"exercise.pushup" = "पुश-अप";
+"exercise.bench" = "बेंच प्रेस";
+"exercise.deadlift" = "डेडलिफ्ट";
+"exercise.lunge" = "लंज";
+"exercise.shoulder_press" = "शोल्डर प्रेस";
+"exercise.curl" = "बाइसेप कर्ल";
+"exercise.pullup" = "पुल-अप";
+"exercise.plank" = "प्लैंक";
+
+/* Camera hints */
+"hint.side" = "साइड व्यू";
+"hint.side_45front" = "साइड या 45° सामने";
+"hint.side_head" = "साइड, कैमरा सिर की ऊँचाई पर";
+"hint.side_45knee" = "साइड (घुटनों के लिए 45° सामने)";
+"hint.front" = "सामने से";

@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "AI Gym Coach";
+"NSCameraUsageDescription" = "AI Gym Coach analyzes your exercise form live through the camera. Video is processed entirely on this device and is never stored or uploaded.";

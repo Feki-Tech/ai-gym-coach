@@ -68,7 +68,8 @@ public final class SessionEngine {
                 if specs[found]?.mode == .hold { plank = PlankTracker() }
                 hud.exercise = found
                 hud.detecting = false
-                spoken.append("\(displayName(found)) detected. Let's go!")
+                spoken.append(String(format: loc("coach.detected"),
+                                     displayName(found)))
             }
         } else if let spec = spec, let counter = counter {
             hud.exercise = exercise
