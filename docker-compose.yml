@@ -5,7 +5,9 @@
 #   EXERCISE=squat docker compose run --rm webcam        # Linux host only
 #
 # `analyze` expects your video in ./data/ and writes annotated.mp4 +
-# workout_log.json back into ./data/.
+# workout_log.json back into ./data/. VIDEO uses a soft default (compose
+# interpolates variables for every service in the file, so a required
+# ${VIDEO:?} would break unrelated services like `webcam`).
 
 services:
   selftest:
@@ -20,7 +22,7 @@ services:
       - "--exercise"
       - "${EXERCISE:-squat}"
       - "--video"
-      - "/data/${VIDEO:?set VIDEO=<file in ./data>}"
+      - "/data/${VIDEO:-VIDEO_env_var_not_set}"
       - "--headless"
       - "--no-voice"
       - "--output"
@@ -39,7 +41,7 @@ services:
     devices:
       - /dev/video0:/dev/video0
     environment:
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./data:/data

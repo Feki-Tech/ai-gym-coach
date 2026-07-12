@@ -708,6 +708,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
     detector = AutoDetector() if auto else None
+
+    cap = cv2.VideoCapture(video if video else 0)
+    if not cap.isOpened():
+        sys.exit(f"Could not open {'video: ' + video if video else 'webcam 0'}"
+                 + ("" if video else " (camera busy or access blocked?)"))
     mp, landmarker = make_landmarker()
     smoother, feedback = SkeletonSmoother(), FeedbackEngine()
     counter = RepCounter(spec) if spec else None
@@ -715,9 +720,6 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     fatigue = FatigueMonitor()
     voice, log = Voice(use_voice), WorkoutLog(log_path)
 
-    cap = cv2.VideoCapture(video if video else 0)
-    if not cap.isOpened():
-        sys.exit("Could not open camera/video.")
     # video files use frame timestamps so processing speed doesn't skew
     # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
     fps = cap.get(cv2.CAP_PROP_FPS) if video else 0.0

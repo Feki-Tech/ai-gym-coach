@@ -141,4 +141,5 @@ OS:
 | `q` does nothing | Click the video window first (keyboard focus), or use Ctrl+C in the terminal with `--headless`. |
 | Jittery skeleton | More light, higher camera, plain background. The One Euro filter handles small noise; darkness causes big noise. |
 | Linux Docker: `cannot open display` | Run `xhost +local:docker` in your desktop session; make sure `DISPLAY` is set. |
+| Windows/macOS: `error gathering device information ... "/dev/video0"` | Expected — Docker Desktop has no webcam passthrough. Use section 3 (record → analyze) or run natively. |
 | Auto-detect locks the wrong exercise | Restart and select it explicitly, e.g. `--exercise lunge`. Bench press always needs manual selection. |
