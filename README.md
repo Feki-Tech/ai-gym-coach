@@ -34,6 +34,9 @@ python pose_coach.py --selftest                  # verify install, no camera nee
 The pose model (~5 MB) downloads automatically on first run. Press `q` to end
 a set and print the session summary.
 
+**Webcam setup, camera placement, and Docker webcam options:
+[docs/WEBCAM.md](docs/WEBCAM.md).**
+
 ## Docker
 
 The image runs headless: video-file analysis, annotated output, and workout
@@ -60,6 +63,10 @@ EXERCISE=squat docker compose run --rm webcam     # Linux host only
 
 Prebuilt image (published by CI from `main`):
 `ghcr.io/feki-tech/ai-gym-coach:latest`.
+
+Live webcam **inside** a container works on Linux hosts (device + X11
+passthrough); on Windows/macOS record a video and analyze it, or run natively
+— full guide in [docs/WEBCAM.md](docs/WEBCAM.md).
 
 ## CI
 
