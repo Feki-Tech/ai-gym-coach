@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+docs
+data
+README.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+__pycache__
+*.pyc
+*.task
+workout_log.json

@@ -540,7 +540,8 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 
 
 # --------------------------------------------------------------- main loop
-def run(exercise: str, video: str | None, use_voice: bool, log_path: str):
+def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
+        headless: bool = False, output: str | None = None):
     import cv2
     spec = SPECS[exercise]
     mp, landmarker = make_landmarker()
@@ -552,80 +553,103 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str):
     cap = cv2.VideoCapture(video if video else 0)
     if not cap.isOpened():
         sys.exit("Could not open camera/video.")
-    print(f"{exercise}: camera hint — {spec.camera_hint}. Press q to finish.")
+    # video files use frame timestamps so processing speed doesn't skew
+    # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
+    fps = cap.get(cv2.CAP_PROP_FPS) if video else 0.0
+    fps = fps if fps and fps > 1 else 30.0
+    writer = None
+    quit_hint = "Ctrl+C" if headless else "q"
+    print(f"{exercise}: camera hint — {spec.camera_hint}. "
+          f"Press {quit_hint} to finish.")
     voice.say(f"Ready for {exercise.replace('_', ' ')}. Let's go!")
-    t0, ts_ms, last_score = time.time(), 0, None
+    t0, ts_ms, frame_idx, last_score = time.time(), 0, 0, None
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        t = time.time() - t0
-        ts_ms = max(ts_ms + 1, int(t * 1000))
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = landmarker.detect_for_video(
-            mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts_ms)
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            t = frame_idx / fps if video else time.time() - t0
+            frame_idx += 1
+            ts_ms = max(ts_ms + 1, int(t * 1000))
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = landmarker.detect_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts_ms)
 
-        pts = landmarks_to_array(result)
-        if pts is not None:
-            pts = smoother.update(pts, t)
-            ang = body_angles(pts)
-            faults_now = live_faults(exercise, ang, counter.state)
+            pts = landmarks_to_array(result)
+            if pts is not None:
+                pts = smoother.update(pts, t)
+                ang = body_angles(pts)
+                faults_now = live_faults(exercise, ang, counter.state)
 
-            if plank:                                   # ---- timed hold
-                if plank.update(ang["body_line"], t):
-                    faults_now.append("body_sag")
-                msg = feedback.push(faults_now, t)
-                if msg:
-                    voice.say(msg)
-                hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
-                        f"best: {plank.best:5.1f}s")
-                hud2 = f"body line: {ang['body_line']:5.1f}"
-            else:                                       # ---- rep exercise
-                for fault in faults_now:
-                    counter.note_fault(fault)
-                ev = counter.update(ang[spec.signal], t)
-                msg = feedback.push(faults_now, t)
-                if msg:
-                    voice.say(msg)
-                if ev:
-                    ev.faults = sorted(set(ev.faults) | set(rep_faults(spec, ev)))
-                    ev.score = score_rep(ev)
-                    last_score = ev.score
-                    log.add_rep(ev)
-                    if ev.faults:
-                        cue = feedback.push(ev.faults, t)
-                        voice.say(f"{ev.count}. {cue or ''}")
-                    else:
-                        voice.say(f"{ev.count}. {feedback.praise()}")
-                    print(f"Rep {ev.count}: score {ev.score}  "
-                          f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
-                          f"min {spec.signal} {ev.min_angle:.0f}  "
-                          f"faults {ev.faults or 'none'}")
-                hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
-                        f"phase: {counter.state}"
-                        + (f"   last score: {last_score}" if last_score is not None else ""))
-                hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
-                        f"trunk: {ang['trunk_lean']:4.1f}")
+                if plank:                                   # ---- timed hold
+                    if plank.update(ang["body_line"], t):
+                        faults_now.append("body_sag")
+                    msg = feedback.push(faults_now, t)
+                    if msg:
+                        voice.say(msg)
+                    hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
+                            f"best: {plank.best:5.1f}s")
+                    hud2 = f"body line: {ang['body_line']:5.1f}"
+                else:                                       # ---- rep exercise
+                    for fault in faults_now:
+                        counter.note_fault(fault)
+                    ev = counter.update(ang[spec.signal], t)
+                    msg = feedback.push(faults_now, t)
+                    if msg:
+                        voice.say(msg)
+                    if ev:
+                        ev.faults = sorted(set(ev.faults) | set(rep_faults(spec, ev)))
+                        ev.score = score_rep(ev)
+                        last_score = ev.score
+                        log.add_rep(ev)
+                        if ev.faults:
+                            cue = feedback.push(ev.faults, t)
+                            voice.say(f"{ev.count}. {cue or ''}")
+                        else:
+                            voice.say(f"{ev.count}. {feedback.praise()}")
+                        print(f"Rep {ev.count}: score {ev.score}  "
+                              f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
+                              f"min {spec.signal} {ev.min_angle:.0f}  "
+                              f"faults {ev.faults or 'none'}")
+                    hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
+                            f"phase: {counter.state}"
+                            + (f"   last score: {last_score}" if last_score is not None else ""))
+                    hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
+                            f"trunk: {ang['trunk_lean']:4.1f}")
 
-            h, w = frame.shape[:2]
-            for i, j in EDGES:
-                if pts[i, 3] > VIS_MIN and pts[j, 3] > VIS_MIN:
-                    cv2.line(frame, (int(pts[i, 0] * w), int(pts[i, 1] * h)),
-                             (int(pts[j, 0] * w), int(pts[j, 1] * h)), (0, 255, 120), 2)
-            for k, line in enumerate((hud1, hud2)):
-                cv2.putText(frame, line, (10, 30 + 28 * k),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            if feedback.current:
-                cv2.putText(frame, feedback.current, (10, h - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
+                h, w = frame.shape[:2]
+                for i, j in EDGES:
+                    if pts[i, 3] > VIS_MIN and pts[j, 3] > VIS_MIN:
+                        cv2.line(frame, (int(pts[i, 0] * w), int(pts[i, 1] * h)),
+                                 (int(pts[j, 0] * w), int(pts[j, 1] * h)), (0, 255, 120), 2)
+                for k, line in enumerate((hud1, hud2)):
+                    cv2.putText(frame, line, (10, 30 + 28 * k),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                if feedback.current:
+                    cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
 
-        cv2.imshow("AI Gym Coach", frame)
-        if cv2.waitKey(1) & 0xFF in (27, ord("q")):
-            break
+            if output:
+                if writer is None:
+                    writer = cv2.VideoWriter(
+                        output, cv2.VideoWriter_fourcc(*"mp4v"), fps,
+                        (frame.shape[1], frame.shape[0]))
+                writer.write(frame)
+            if not headless:
+                cv2.imshow("AI Gym Coach", frame)
+                if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+                    break
+    except KeyboardInterrupt:
+        print("\nInterrupted — finishing session...")
 
     cap.release()
-    cv2.destroyAllWindows()
+    landmarker.close()
+    if writer is not None:
+        writer.release()
+        print(f"Annotated video written to {output}")
+    if not headless:
+        cv2.destroyAllWindows()
     summary = log.finish(exercise, time.time() - t0, plank)
     print_summary(summary)
     if plank:
@@ -743,6 +767,7 @@ def selftest():
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
         res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=blank), 1)
         assert res.pose_landmarks is not None
+        lm.close()   # avoid noisy teardown at interpreter shutdown
         print("OK (no pose in blank frame, as expected)")
     except ImportError:
         print("SKIPPED (mediapipe not installed)")
@@ -755,6 +780,10 @@ if __name__ == "__main__":
     ap.add_argument("--exercise", choices=sorted(SPECS), default="squat")
     ap.add_argument("--video", help="video file instead of webcam")
     ap.add_argument("--no-voice", action="store_true", help="disable TTS voice")
+    ap.add_argument("--headless", action="store_true",
+                    help="no GUI window (Docker/servers); requires --video "
+                         "or Ctrl+C to stop a webcam session")
+    ap.add_argument("--output", help="write annotated video to this file (mp4)")
     ap.add_argument("--log-file", default=DEFAULT_LOG,
                     help=f"workout log path (default {DEFAULT_LOG})")
     ap.add_argument("--selftest", action="store_true", help="run without camera")
@@ -762,4 +791,5 @@ if __name__ == "__main__":
     if args.selftest:
         selftest()
     else:
-        run(args.exercise, args.video, not args.no_voice, args.log_file)
+        run(args.exercise, args.video, not args.no_voice, args.log_file,
+            headless=args.headless, output=args.output)

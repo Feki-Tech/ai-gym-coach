@@ -1,5 +1,7 @@
 # AI Gym Coach 🏋️
 
+[![CI](https://github.com/Feki-Tech/ai-gym-coach/actions/workflows/ci.yml/badge.svg)](https://github.com/Feki-Tech/ai-gym-coach/actions/workflows/ci.yml)
+
 Real-time AI fitness coach using computer vision: it watches your exercise
 through a webcam, tracks your skeleton, counts reps, measures tempo, checks
 your form, and coaches you with on-screen + voice feedback.
@@ -27,6 +29,39 @@ python pose_coach.py --selftest                  # verify install, no camera nee
 
 The pose model (~5 MB) downloads automatically on first run. Press `q` to end
 a set and print the session summary.
+
+## Docker
+
+The image runs headless: video-file analysis, annotated output, and workout
+logging (webcam/GUI from a container works on Linux hosts only).
+
+```bash
+docker build -t ai-gym-coach .
+docker run --rm ai-gym-coach                      # selftest (default cmd)
+
+# analyze a video: put it in ./data, get annotated.mp4 + workout_log.json back
+docker run --rm -v ./data:/data ai-gym-coach \
+    --exercise squat --video /data/squats.mp4 \
+    --headless --no-voice --output /data/annotated.mp4 \
+    --log-file /data/workout_log.json
+```
+
+Or with compose:
+
+```bash
+docker compose run --rm selftest
+VIDEO=squats.mp4 EXERCISE=squat docker compose run --rm analyze
+EXERCISE=squat docker compose run --rm webcam     # Linux host only
+```
+
+Prebuilt image (published by CI from `main`):
+`ghcr.io/feki-tech/ai-gym-coach:latest`.
+
+## CI
+
+GitHub Actions runs the selftest suite on Ubuntu + Windows (Python 3.11/3.12),
+builds the Docker image, re-runs the selftests inside the container, and
+pushes the image to GHCR on every push to `main`.
 
 ### Camera placement
 

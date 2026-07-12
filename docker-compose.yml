@@ -1,0 +1,45 @@
+# AI Gym Coach — container recipes.
+#
+#   docker compose run --rm selftest
+#   VIDEO=squats.mp4 EXERCISE=squat docker compose run --rm analyze
+#   EXERCISE=squat docker compose run --rm webcam        # Linux host only
+#
+# `analyze` expects your video in ./data/ and writes annotated.mp4 +
+# workout_log.json back into ./data/.
+
+services:
+  selftest:
+    build: .
+    image: ai-gym-coach
+    command: ["--selftest"]
+
+  analyze:
+    build: .
+    image: ai-gym-coach
+    command:
+      - "--exercise"
+      - "${EXERCISE:-squat}"
+      - "--video"
+      - "/data/${VIDEO:?set VIDEO=<file in ./data>}"
+      - "--headless"
+      - "--no-voice"
+      - "--output"
+      - "/data/annotated.mp4"
+      - "--log-file"
+      - "/data/workout_log.json"
+    volumes:
+      - ./data:/data
+
+  # Live webcam + GUI from a container works on Linux hosts only
+  # (device passthrough + X11). On Windows/macOS run pose_coach.py natively.
+  webcam:
+    build: .
+    image: ai-gym-coach
+    command: ["--exercise", "${EXERCISE:-squat}", "--no-voice"]
+    devices:
+      - /dev/video0:/dev/video0
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./data:/data
