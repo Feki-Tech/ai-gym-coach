@@ -1,0 +1,45 @@
+/* Home */
+"AI Gym Coach" = "مدرب الجيم الذكي";
+"Auto-detect" = "تعرّف تلقائي";
+"I'll recognize the movement" = "سأتعرف على الحركة تلقائيًا";
+"Voice coaching" = "تدريب صوتي";
+
+/* Workout */
+"Ready. Let's go!" = "جاهز. هيا بنا!";
+"Detecting exercise…" = "جارٍ التعرف على التمرين…";
+"phase.IDLE" = "جاهز";
+"phase.DESCENT" = "نزول";
+"phase.BOTTOM" = "الأسفل";
+"phase.ASCENT" = "صعود";
+"Reps %lld" = "تكرارات %lld";
+"Score %lld" = "النتيجة %lld";
+"Hold %.1f s   ·   best %.1f s" = "ثبات %.1f ث · الأفضل %.1f ث";
+"End set" = "إنهاء المجموعة";
+
+/* Summary */
+"Set complete" = "اكتملت المجموعة";
+"Set" = "المجموعة";
+"Exercise" = "التمرين";
+"Duration" = "المدة";
+"Total hold" = "إجمالي الثبات";
+"Best streak" = "أفضل ثبات متواصل";
+"Reps" = "التكرارات";
+"Average score" = "متوسط النتيجة";
+"Velocity loss" = "فقدان السرعة";
+"Focus points" = "نقاط للتحسين";
+"×%lld" = "×%lld";
+"Clean set — no recurring faults!" = "مجموعة نظيفة — دون أخطاء متكررة!";
+"Done" = "تم";
+
+/* History */
+"Progress" = "التقدم";
+"Score trend" = "اتجاه النتيجة";
+"Sessions" = "الجلسات";
+"No workouts yet" = "لا توجد تمارين بعد";
+"Finish a set and it will show up here." = "أكمل مجموعة وستظهر هنا.";
+"Complete two scored sessions of %@ to see a trend." = "أكمل جلستين مقيّمتين من %@ لرؤية الاتجاه.";
+"%lld reps" = "%lld تكرار";
+"score %lld" = "النتيجة %lld";
+"vel. loss %.0f%%" = "فقدان السرعة %.0f%%";
+"hold %.0f s" = "ثبات %.0f ث";
+"best %.0f s" = "الأفضل %.0f ث";

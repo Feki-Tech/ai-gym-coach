@@ -12,11 +12,12 @@ zero external dependencies, no model file to bundle, hardware-accelerated on
 every iPhone since ~2018. All video is processed on-device; nothing is
 uploaded — which also makes the App Store privacy questionnaire trivial.
 
-**Languages:** the app — including the spoken coaching cues — ships in the
-5 most-spoken languages in the world: English (`en`), Simplified Chinese
-(`zh-Hans`), Hindi (`hi`), Spanish (`es`) and French (`fr`). It follows the
-iPhone's system language automatically; the voice coach picks a matching
-`AVSpeechSynthesisVoice`. Engine strings live in
+**Languages:** the app — including the spoken coaching cues — ships in
+6 languages: English (`en`), Simplified Chinese (`zh-Hans`), Hindi (`hi`),
+Spanish (`es`), French (`fr`) and Arabic (`ar`). It follows the iPhone's
+system language automatically; the voice coach picks a matching
+`AVSpeechSynthesisVoice`, and SwiftUI mirrors the layout right-to-left for
+Arabic. Engine strings live in
 `ios/CoachCore/Sources/CoachCore/Resources/<lang>.lproj/Localizable.strings`,
 app strings in `ios/GymCoach/Resources/<lang>.lproj/` (plus
 `InfoPlist.strings` for the localized app name and camera-permission text).

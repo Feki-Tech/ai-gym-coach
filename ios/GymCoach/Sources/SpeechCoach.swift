@@ -15,6 +15,7 @@ final class SpeechCoach: NSObject, AVSpeechSynthesizerDelegate {
         case lang.hasPrefix("hi"): bcp47 = "hi-IN"
         case lang.hasPrefix("es"): bcp47 = "es-ES"
         case lang.hasPrefix("fr"): bcp47 = "fr-FR"
+        case lang.hasPrefix("ar"): bcp47 = "ar-SA"
         default: bcp47 = "en-US"
         }
         return AVSpeechSynthesisVoice(language: bcp47)

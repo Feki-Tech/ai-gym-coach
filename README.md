@@ -97,7 +97,7 @@ A native SwiftUI app lives in [`ios/`](ios/): Apple Vision body-pose on the
 Neural Engine, live skeleton overlay, rep counting, voice coaching, and a
 progress dashboard — same engine, same thresholds, same `workout_log.json`
 schema as the desktop app. Fully localized (UI **and** spoken coaching cues)
-in the 5 most-spoken languages: **English, 中文, हिन्दी, Español, Français**.
+in 6 languages: **English, 中文, हिन्दी, Español, Français, العربية**.
 Build & App Store submission guide:
 **[docs/IOS.md](docs/IOS.md)** — including getting it onto your iPhone via
 TestFlight **without a Mac** (CI does the signing and uploading).
@@ -108,7 +108,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] Fatigue estimation from velocity loss
 - [x] Progress dashboard (`--stats`)
 - [x] iOS app (SwiftUI + Apple Vision) — see [docs/IOS.md](docs/IOS.md)
-- [x] iOS localization: en · zh-Hans · hi · es · fr (UI + voice coaching)
+- [x] iOS localization: en · zh-Hans · hi · es · fr · ar (UI + voice coaching)
 - [ ] ML exercise auto-classification (GRU/ST-GCN on normalized keypoints)
 - [ ] DTW comparison against expert reference reps
 - [ ] Android app (MediaPipe Tasks, Kotlin)

@@ -1,0 +1,35 @@
+/* Coaching cues */
+"fault.back_lean" = "افرد ظهرك.";
+"fault.back_round" = "حافظ على استقامة ظهرك — ارفع صدرك.";
+"fault.body_sag" = "حافظ على جسمك في خط مستقيم.";
+"fault.knees_cave" = "ادفع ركبتيك للخارج — لا تدعهما تنحنيان للداخل.";
+"fault.shallow" = "انزل أكثر — نطاق حركة كامل.";
+"fault.elbow_swing" = "أبقِ مرفقيك ملتصقين بجانبيك.";
+"fault.elbow_flare" = "قرّب مرفقيك من جسمك.";
+"fault.torso_lean" = "حافظ على جذعك مستقيمًا.";
+"fault.lean_back" = "لا تمل للخلف — شدّ عضلات بطنك.";
+"fault.uneven" = "وازن بين الجانبين معًا.";
+"fault.chin" = "اسحب أعلى — ذقنك فوق العارضة.";
+"fault.shrug_neck" = "حافظ على رقبتك في وضع محايد.";
+"fault.too_fast" = "أبطئ — تحكّم في الحركة.";
+"coach.fatigue" = "سرعتك تتباطأ — حافظ على الأداء الصحيح أو أنهِ المجموعة.";
+"coach.praise" = "أداء ممتاز!";
+"coach.detected" = "تم التعرف على %@. هيا بنا!";
+
+/* Exercise names */
+"exercise.squat" = "سكوات";
+"exercise.pushup" = "تمرين الضغط";
+"exercise.bench" = "بنش برس";
+"exercise.deadlift" = "ديدلفت";
+"exercise.lunge" = "لانجز";
+"exercise.shoulder_press" = "ضغط الكتف";
+"exercise.curl" = "كيرل بايسبس";
+"exercise.pullup" = "عقلة";
+"exercise.plank" = "بلانك";
+
+/* Camera hints */
+"hint.side" = "منظر جانبي";
+"hint.side_45front" = "جانبي أو أمامي بزاوية 45°";
+"hint.side_head" = "جانبي، الكاميرا بمستوى الرأس";
+"hint.side_45knee" = "جانبي (أمامي 45° لتتبع الركبتين)";
+"hint.front" = "منظر أمامي";
