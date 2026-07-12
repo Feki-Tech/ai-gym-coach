@@ -9,6 +9,7 @@ venv/
 # personal workout data
 workout_log.json
 references.json
+coach_profile.db
 
 # trained classifier weights + collected training data
 classifier.npz

@@ -20,11 +20,17 @@ It answers in the language you speak to it. Replies stream in live,
 are spoken sentence-by-sentence, and you can interrupt at any time:
 type a new question mid-answer (workout mode) or press Ctrl+C (chat mode).
 
+The coach also keeps a local *athlete profile* (coach_profile.db, SQLite):
+durable facts you mention in chat (goals, injuries, equipment, schedule…)
+are extracted automatically and remembered across sessions. Commands:
+/profile shows it, /remember and /forget edit it, --no-profile disables.
+
 Config (env vars):
     COACH_LLM_BASE_URL   default http://localhost:11434/v1   (Ollama)
     COACH_LLM_MODEL      default llama3.2:3b
     COACH_LLM_API_KEY    default "ollama" (set a real key for OpenAI etc.)
     COACH_LOG            default workout_log.json
+    COACH_PROFILE_DB     default coach_profile.db
 
 Voice input needs optional extras (host only):  pip install -r requirements-voice.txt
 """
@@ -39,6 +45,8 @@ import threading
 import urllib.error
 import urllib.request
 from collections import deque
+
+import coach_profile
 
 DEFAULT_BASE = os.environ.get("COACH_LLM_BASE_URL", "http://localhost:11434/v1")
 DEFAULT_MODEL = os.environ.get("COACH_LLM_MODEL", "llama3.2:3b")
@@ -222,15 +230,24 @@ class ChatCoach:
     """Conversation state: persona + history/live-session context + memory."""
 
     def __init__(self, client: LLMClient | None = None,
-                 log_path: str = DEFAULT_LOG, state_provider=None):
+                 log_path: str = DEFAULT_LOG, state_provider=None,
+                 profile: "coach_profile.ProfileStore | None" = None):
         self.client = client or LLMClient()
         self.log_path = log_path
         self.state_provider = state_provider   # () -> dict with live session
+        self.profile = profile                 # long-term athlete facts
         self.history: list[dict] = []          # user/assistant turns only
 
     def _system(self) -> str:
         parts = [PERSONA, "", "TRAINING HISTORY (most recent last):",
                  progress_summary(self.log_path)]
+        if self.profile is not None:
+            try:
+                block = self.profile.as_prompt()
+                if block:
+                    parts += ["", block]
+            except Exception:
+                pass
         if self.state_provider:
             try:
                 live = self.state_provider()
@@ -270,6 +287,28 @@ class ChatCoach:
             if reply:
                 self.history.append({"role": "assistant", "content": reply})
 
+    def learn_async(self):
+        """Mine the last exchange for durable athlete facts (background)."""
+        if self.profile is None or not self.history:
+            return
+        if self.history[-1]["role"] != "assistant":
+            return
+        reply = self.history[-1]["content"]
+        user = next((m["content"] for m in reversed(self.history)
+                     if m["role"] == "user"), "")
+        if not user:
+            return
+
+        def _bg():
+            try:
+                for f in coach_profile.extract_facts(self.client, user,
+                                                     reply):
+                    self.profile.remember(f["category"], f["key"],
+                                          f["value"])
+            except Exception:
+                pass                      # memory is best-effort, never fatal
+        threading.Thread(target=_bg, daemon=True).start()
+
 
 # ------------------------------------------------------------ voice I/O
 def voice_input_available() -> bool:
@@ -282,6 +321,7 @@ def voice_input_available() -> bool:
 
 
 _whisper_model = None
+_whisper_lock = threading.Lock()
 
 # Whisper hallucinates these on noise-only audio — never treat as a question.
 _JUNK = {"you", "you.", "uh", "um", "bye.", "thank you.", "thanks.",
@@ -295,6 +335,10 @@ def looks_like_speech(text: str) -> str:
     if len(t) < 2 or not re.search(r"\w", t):
         return ""
     if t.lower() in _JUNK:
+        return ""
+    words = t.lower().split()
+    # noise loops like "Music Music Music" / the same phrase over and over
+    if len(words) >= 4 and len(set(words)) / len(words) <= 0.5:
         return ""
     return t
 
@@ -313,10 +357,11 @@ def _mic_hint() -> str:
 
 def _load_whisper():
     global _whisper_model
-    if _whisper_model is None:
-        from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel("base", device="cpu",
-                                      compute_type="int8")
+    with _whisper_lock:
+        if _whisper_model is None:
+            from faster_whisper import WhisperModel
+            _whisper_model = WhisperModel("base", device="cpu",
+                                          compute_type="int8")
     return _whisper_model
 
 
@@ -581,6 +626,7 @@ class BackgroundChat:
         self.tts_active = tts_active or (lambda: False)
         self._cancel = threading.Event()
         self._busy = False
+        self._ptt = threading.Lock()   # one push-to-talk recording at a time
         self._q: "queue.Queue[str]" = queue.Queue()
         self.listener: HandsFreeListener | None = None
         if hands_free:
@@ -617,6 +663,11 @@ class BackgroundChat:
 
     def submit(self, text: str):
         """Queue a question; interrupts any answer in progress (barge-in)."""
+        cmd_out = coach_profile.handle_command(
+            getattr(self.coach, "profile", None), text)
+        if cmd_out is not None:
+            print("\n" + cmd_out)
+            return
         if self._busy:
             self._cancel.set()
             self.stop_speaking()
@@ -640,6 +691,9 @@ class BackgroundChat:
                 if buf.strip() and not self._cancel.is_set():
                     self.speak(buf.strip())
                 print("\n")
+                learn = getattr(self.coach, "learn_async", None)
+                if learn:
+                    learn()
             except CoachOffline as e:
                 print(f"\n(coach offline) {e}\n")
             finally:
@@ -665,39 +719,63 @@ class BackgroundChat:
             return
 
         def _worker():
-            if self._busy:
-                self._cancel.set()
-                self.stop_speaking()
+            if not self._ptt.acquire(blocking=False):
+                return                 # already recording — ignore key spam
             try:
-                text = record_and_transcribe()
-            except Exception as e:
-                print(f"(mic/transcription failed: {e})")
-                print(_mic_hint())
-                return
-            if not text:
-                print("(heard nothing)")
-                return
-            print(f"You (voice): {text}")
-            self.submit(text)
+                if self._busy:
+                    self._cancel.set()
+                    self.stop_speaking()
+                try:
+                    text = record_and_transcribe()
+                except Exception as e:
+                    print(f"(mic/transcription failed: {e})")
+                    print(_mic_hint())
+                    return
+                if not text:
+                    print("(heard nothing)")
+                    return
+                print(f"You (voice): {text}")
+                self.submit(text)
+            finally:
+                self._ptt.release()
 
         threading.Thread(target=_worker, daemon=True).start()
 
 
 def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
                           tts_active=None, hands_free: bool = False,
-                          log_path: str = DEFAULT_LOG) -> BackgroundChat:
-    coach = ChatCoach(log_path=log_path, state_provider=state_provider)
+                          log_path: str = DEFAULT_LOG,
+                          profile_db: str | None = "") -> BackgroundChat:
+    """profile_db: "" = default file, None = memory disabled."""
+    profile = None
+    if profile_db is not None:
+        try:
+            profile = coach_profile.ProfileStore(
+                profile_db or coach_profile.DEFAULT_DB)
+        except Exception:
+            pass
+    coach = ChatCoach(log_path=log_path, state_provider=state_provider,
+                      profile=profile)
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
           f"{coach.client.base_url}) — type a question anytime; asking "
           "again mid-answer interrupts the coach.")
+    if profile is not None:
+        print("The coach remembers you between sessions (local file "
+              f"{profile.path}). Commands: /profile /remember /forget")
     return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking,
                           tts_active=tts_active, hands_free=hands_free)
 
 
 # ------------------------------------------------------------ interactive
 def interactive(args):
+    profile = None
+    if not getattr(args, "no_profile", False):
+        try:
+            profile = coach_profile.ProfileStore(args.profile_file)
+        except Exception as e:
+            print(f"(profile store unavailable: {e})")
     coach = ChatCoach(LLMClient(args.base_url, args.model),
-                      log_path=args.log_file)
+                      log_path=args.log_file, profile=profile)
     speaker = _Speaker(args.voice)
     if getattr(args, "hands_free", False):
         if not voice_input_available():
@@ -725,6 +803,7 @@ def interactive(args):
           f"{coach.client.base_url}")
     print("Ask about your workouts, form, programming, nutrition basics.")
     print("Ctrl+C interrupts an answer. Commands: /quit"
+          + (" /profile /remember /forget" if profile is not None else "")
           + ("   (empty line = talk with the mic)" if listen else ""))
     while True:
         try:
@@ -734,6 +813,10 @@ def interactive(args):
             break
         if text.lower() in ("/quit", "/exit", "quit", "exit"):
             break
+        cmd_out = coach_profile.handle_command(profile, text)
+        if cmd_out is not None:
+            print(cmd_out)
+            continue
         if not text:
             if not listen:
                 continue
@@ -758,6 +841,7 @@ def interactive(args):
             if buf.strip():
                 speaker.say(buf.strip())
             print("\n")
+            coach.learn_async()
         except KeyboardInterrupt:
             speaker.stop()
             print("\n(interrupted)\n")
@@ -939,8 +1023,43 @@ def selftest():
     assert looks_like_speech(" Thanks for watching! ") == ""
     assert looks_like_speech("you") == ""
     assert looks_like_speech("...") == ""
+    assert looks_like_speech("Music Music Music Music") == ""
     q = "How deep should I squat?"
     assert looks_like_speech(f"  {q} ") == q
+    print("ok")
+
+    print("10) athlete profile: prompt injection + auto-learning:", end=" ")
+    with tempfile.TemporaryDirectory() as tmp:
+        store = coach_profile.ProfileStore(os.path.join(tmp, "p.db"))
+        store.remember("injuries", "left_knee", "meniscus strain")
+
+        class ProfClient:
+            model, base_url = "m", "http://x/v1"
+            def __init__(self): self.extracted = threading.Event()
+            def chat(self, messages):
+                self.extracted.set()
+                return ('[{"category":"goals","key":"target",'
+                        '"value":"first pull-up"}]')
+            def chat_stream(self, messages):
+                yield "Nice. "
+
+        pc = ProfClient()
+        coach = ChatCoach(pc, log_path=os.path.join(tmp, "none.json"),
+                          profile=store)
+        assert "meniscus strain" in coach._system()
+        list(coach.ask_stream("My goal is a pull-up"))
+        coach.learn_async()
+        assert pc.extracted.wait(5), "fact extraction never ran"
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            if any(k == "target" for _, k, _, _ in store.facts()):
+                break
+            _time.sleep(0.02)
+        assert ("goals", "target", "first pull-up") in [
+            r[:3] for r in store.facts()], store.facts()
+        out = coach_profile.handle_command(store, "/profile")
+        assert "first pull-up" in out
+        assert coach_profile.handle_command(store, "not a command") is None
     print("ok")
 
     print("\nAll coach_chat selftests passed.")
@@ -965,14 +1084,22 @@ if __name__ == "__main__":
                          "(needs voice extras)")
     ap.add_argument("--once", metavar="QUESTION",
                     help="ask one question, print the answer, exit")
+    ap.add_argument("--profile-file", default=coach_profile.DEFAULT_DB,
+                    help="athlete profile DB the coach remembers you with "
+                         f"(default {coach_profile.DEFAULT_DB})")
+    ap.add_argument("--no-profile", action="store_true",
+                    help="don't read or store any athlete profile")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         selftest()
     elif args.once:
         try:
+            prof = (None if args.no_profile
+                    else coach_profile.ProfileStore(args.profile_file))
             print(ChatCoach(LLMClient(args.base_url, args.model),
-                            log_path=args.log_file).ask(args.once))
+                            log_path=args.log_file, profile=prof)
+                  .ask(args.once))
         except CoachOffline as e:
             sys.exit(str(e))
     else:

@@ -123,6 +123,33 @@ The coach sees live session data — current exercise, phase, rep count, last
 score, fault counts, velocity loss — plus your history, and tailors its
 answers ("your knees caved in 3 times this set — try a wider stance…").
 
+## 4. The coach remembers you (athlete profile)
+
+Durable facts you mention in chat — age, weight, goals, injuries,
+equipment, schedule, diet, preferences — are **extracted automatically**
+after each exchange and saved to a local SQLite file
+(`coach_profile.db`, git-ignored). Next session, the coach already knows:
+
+> *"Given your left-knee history, let's keep squats above parallel today."*
+
+| Command | Effect |
+|---|---|
+| `/profile` | show everything the coach remembers |
+| `/remember <key> <value…>` | save a fact by hand (`/remember weight 82 kg`) |
+| `/remember <category> <key> <value…>` | with category: `identity body goals injuries equipment schedule nutrition preferences` |
+| `/forget <key>` | erase one fact |
+| `/forget all` | wipe the whole profile |
+
+Commands work in the workout terminal (`--coach`) and standalone chat.
+`--no-profile` disables memory entirely; `--profile-file PATH` (or env
+`COACH_PROFILE_DB`) relocates it — handy for multiple athletes sharing
+a machine: one file each.
+
+**Privacy**: the profile never leaves your machine. With the default
+Ollama backend, even the fact-extraction step runs locally. Inspect it
+anytime (`python coach_profile.py --show`) — it's a plain SQLite file
+you can delete whenever you like.
+
 ## Config
 
 Environment variables (or CLI flags on `coach_chat.py`):
@@ -133,6 +160,7 @@ Environment variables (or CLI flags on `coach_chat.py`):
 | `COACH_LLM_MODEL` | `llama3.2:3b` | model name |
 | `COACH_LLM_API_KEY` | `ollama` | API key (only needed for hosted APIs) |
 | `COACH_LOG` | `workout_log.json` | history used for context |
+| `COACH_PROFILE_DB` | `coach_profile.db` | athlete profile the coach remembers you with |
 
 Examples: point it at **OpenAI** (`COACH_LLM_BASE_URL=https://api.openai.com/v1`,
 `COACH_LLM_MODEL=gpt-4o-mini`, `COACH_LLM_API_KEY=sk-…`) or any other
