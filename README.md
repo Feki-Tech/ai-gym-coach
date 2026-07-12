@@ -71,8 +71,9 @@ passthrough); on Windows/macOS record a video and analyze it, or run natively
 ## CI
 
 GitHub Actions runs the selftest suite on Ubuntu + Windows (Python 3.11/3.12),
-builds the Docker image, re-runs the selftests inside the container, and
-pushes the image to GHCR on every push to `main`.
+builds the Docker image, re-runs the selftests inside the container, pushes
+the image to GHCR, and builds the iOS app (CoachCore unit tests + simulator
+build on macOS) on every push to `main`.
 
 ### Camera placement
 
@@ -90,11 +91,20 @@ faults → prioritized feedback (screen + voice) → JSON workout log.
 Full system design (model comparison, architecture, datasets, mobile
 deployment, roadmap): **[docs/DESIGN.md](docs/DESIGN.md)**.
 
+## iPhone app 📱
+
+A native SwiftUI app lives in [`ios/`](ios/): Apple Vision body-pose on the
+Neural Engine, live skeleton overlay, rep counting, voice coaching, and a
+progress dashboard — same engine, same thresholds, same `workout_log.json`
+schema as the desktop app. Build & App Store submission guide:
+**[docs/IOS.md](docs/IOS.md)**.
+
 ## Roadmap
 
 - [x] Rule-based exercise auto-detection (`--exercise auto`)
 - [x] Fatigue estimation from velocity loss
 - [x] Progress dashboard (`--stats`)
+- [x] iOS app (SwiftUI + Apple Vision) — see [docs/IOS.md](docs/IOS.md)
 - [ ] ML exercise auto-classification (GRU/ST-GCN on normalized keypoints)
 - [ ] DTW comparison against expert reference reps
 - [ ] Android app (MediaPipe Tasks, Kotlin)

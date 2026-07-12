@@ -71,3 +71,24 @@ jobs:
             ghcr.io/feki-tech/ai-gym-coach:latest
             ghcr.io/feki-tech/ai-gym-coach:${{ github.sha }}
           cache-from: type=gha
+
+  ios:
+    name: iOS — CoachCore tests + app build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: CoachCore unit tests
+        run: swift test --package-path ios/CoachCore
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/GymCoach/project.yml --project ios/GymCoach
+      - name: Build app for iOS Simulator
+        run: >
+          xcodebuild build
+          -project ios/GymCoach/GymCoach.xcodeproj
+          -scheme GymCoach
+          -destination 'generic/platform=iOS Simulator'
+          -configuration Debug
+          CODE_SIGNING_ALLOWED=NO
+          -quiet

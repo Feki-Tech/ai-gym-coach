@@ -11,3 +11,12 @@ workout_log.json
 
 .idea/
 .vscode/
+
+# Xcode / Swift (generated or user-specific)
+ios/GymCoach/GymCoach.xcodeproj/
+ios/GymCoach/Info.plist
+ios/**/.build/
+ios/**/DerivedData/
+ios/**/xcuserdata/
+*.xcresult
+
