@@ -1,0 +1,5 @@
+# Optional extras for TALKING to the coach with your microphone
+# (push-to-talk speech-to-text, runs locally — any of the app's languages):
+#   pip install -r requirements-voice.txt
+sounddevice>=0.4
+faster-whisper>=1.0

@@ -703,7 +703,8 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 
 # --------------------------------------------------------------- main loop
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
-        headless: bool = False, output: str | None = None):
+        headless: bool = False, output: str | None = None,
+        coach: bool = False):
     import cv2
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
@@ -719,6 +720,18 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     plank = PlankTracker() if spec and spec.mode == "hold" else None
     fatigue = FatigueMonitor()
     voice, log = Voice(use_voice), WorkoutLog(log_path)
+
+    chat = None
+    if coach:
+        import coach_chat
+        live_state = {"exercise": None if auto else exercise, "phase": "IDLE",
+                      "reps": 0, "last_score": None, "fault_counts": {},
+                      "velocity_loss_pct": None, "plank_hold_s": None}
+        chat = coach_chat.start_background_chat(
+            state_provider=lambda: dict(live_state),
+            speak=voice.say, log_path=log_path)
+        if not headless:
+            print("Press 'c' in the video window to ask the coach by voice.")
 
     # video files use frame timestamps so processing speed doesn't skew
     # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
@@ -762,6 +775,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         exercise, spec = det, SPECS[det]
                         counter = RepCounter(spec)
                         plank = PlankTracker() if spec.mode == "hold" else None
+                        if chat:
+                            live_state["exercise"] = det
                         print(f"Auto-detected exercise: {det} "
                               f"(camera hint — {spec.camera_hint})")
                         voice.say(f"{det.replace('_', ' ')} detected. Let's go!")
@@ -775,6 +790,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
                             f"best: {plank.best:5.1f}s")
                     hud2 = f"body line: {ang['body_line']:5.1f}"
+                    if chat:
+                        live_state["plank_hold_s"] = round(plank.total, 1)
                 else:                                       # ---- rep exercise
                     faults_now = live_faults(exercise, ang, counter.state)
                     for fault in faults_now:
@@ -806,6 +823,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                               f"vel {vel:.0f} deg/s  "
                               f"min {spec.signal} {ev.min_angle:.0f}  "
                               f"faults {ev.faults or 'none'}")
+                        if chat:
+                            live_state.update(
+                                reps=ev.count, last_score=ev.score,
+                                fault_counts=WorkoutLog._fault_counts(
+                                    log.session["reps"]),
+                                velocity_loss_pct=round(fatigue.loss * 100, 1)
+                                if fatigue.loss else None)
+                    if chat:
+                        live_state["phase"] = counter.state
                     hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
                             f"phase: {counter.state}"
                             + (f"   last score: {last_score}" if last_score is not None else ""))
@@ -832,8 +858,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                 writer.write(frame)
             if not headless:
                 cv2.imshow("AI Gym Coach", frame)
-                if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q")):
                     break
+                if key == ord("c") and chat:
+                    chat.push_to_talk()
     except KeyboardInterrupt:
         print("\nInterrupted — finishing session...")
 
@@ -1051,6 +1080,10 @@ if __name__ == "__main__":
     ap.add_argument("--stats", action="store_true",
                     help="print progress dashboard from the workout log and exit")
     ap.add_argument("--selftest", action="store_true", help="run without camera")
+    ap.add_argument("--coach", action="store_true",
+                    help="conversational LLM coach: type questions in the "
+                         "terminal or press 'c' for push-to-talk "
+                         "(see docs/COACH.md)")
     args = ap.parse_args()
     if args.selftest:
         selftest()
@@ -1058,4 +1091,4 @@ if __name__ == "__main__":
         print_stats(args.log_file)
     else:
         run(args.exercise, args.video, not args.no_voice, args.log_file,
-            headless=args.headless, output=args.output)
+            headless=args.headless, output=args.output, coach=args.coach)

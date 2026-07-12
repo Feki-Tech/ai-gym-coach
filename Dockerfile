@@ -12,7 +12,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pose_coach.py .
+COPY pose_coach.py coach_chat.py ./
 # bake the pose model into the image so containers run offline
 RUN python -c "import pose_coach; pose_coach.ensure_model()"
 

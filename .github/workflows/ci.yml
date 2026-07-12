@@ -33,6 +33,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run selftest suite
         run: python pose_coach.py --selftest
+      - name: Run coach chat selftests
+        run: python coach_chat.py --selftest
 
   docker:
     name: docker build + containerized selftest
@@ -54,6 +56,8 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Selftest inside container
         run: docker run --rm ai-gym-coach:ci --selftest
+      - name: Coach chat selftest inside container
+        run: docker run --rm --entrypoint python ai-gym-coach:ci coach_chat.py --selftest
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3

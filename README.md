@@ -17,6 +17,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Auto exercise detection** — `--exercise auto` recognizes the movement from the skeleton (8 of 9 exercises; bench press needs manual selection)
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
+- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context — see [docs/COACH.md](docs/COACH.md)
 
 ## Quick start
 
@@ -36,6 +37,23 @@ a set and print the session summary.
 
 **Webcam setup, camera placement, and Docker webcam options:
 [docs/WEBCAM.md](docs/WEBCAM.md).**
+
+## Talk to your coach 🗣️
+
+```bash
+docker compose up -d ollama                          # local LLM in Docker
+docker compose exec ollama ollama pull llama3.2:3b   # once
+
+python pose_coach.py --exercise auto --coach   # chat while you train
+                                               # ('c' in the window = ask by mic)
+python coach_chat.py --voice --listen          # standalone voice chat
+docker compose run --rm coach                  # text chat fully in Docker
+```
+
+The coach sees your live session (reps, scores, faults, fatigue) and your
+training history, answers in your language, and speaks through your
+speakers. Private by default — the LLM runs on your machine. Full guide:
+**[docs/COACH.md](docs/COACH.md)**.
 
 ## Docker
 
@@ -109,6 +127,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] Progress dashboard (`--stats`)
 - [x] iOS app (SwiftUI + Apple Vision) — see [docs/IOS.md](docs/IOS.md)
 - [x] iOS localization: en · zh-Hans · hi · es · fr · ar (UI + voice coaching)
+- [x] Conversational LLM coach — talk to it by text/mic during workouts (Ollama in Docker), see [docs/COACH.md](docs/COACH.md)
 - [ ] ML exercise auto-classification (GRU/ST-GCN on normalized keypoints)
 - [ ] DTW comparison against expert reference reps
 - [ ] Android app (MediaPipe Tasks, Kotlin)

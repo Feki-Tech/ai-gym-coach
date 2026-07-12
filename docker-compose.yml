@@ -4,10 +4,18 @@
 #   VIDEO=squats.mp4 EXERCISE=squat docker compose run --rm analyze
 #   EXERCISE=squat docker compose run --rm webcam        # Linux host only
 #
+#   docker compose up -d ollama                          # local LLM (any OS)
+#   docker compose exec ollama ollama pull llama3.2:3b   # once, ~2 GB
+#   docker compose run --rm coach                        # chat with the coach
+#
 # `analyze` expects your video in ./data/ and writes annotated.mp4 +
 # workout_log.json back into ./data/. VIDEO uses a soft default (compose
 # interpolates variables for every service in the file, so a required
 # ${VIDEO:?} would break unrelated services like `webcam`).
+#
+# Camera/mic/speakers cannot be passed into containers on Windows/macOS —
+# there, run pose_coach.py natively and let it talk to the `ollama`
+# container (it listens on localhost:11434). See docs/COACH.md.
 
 services:
   selftest:
@@ -45,3 +53,58 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./data:/data
+
+  # ---------------------------------------------------------------- LLM coach
+  # Local LLM server (Ollama). Works on every OS; models persist in a volume.
+  # Exposed on localhost:11434 so a natively-running pose_coach.py --coach
+  # can use it too (that is the recommended setup on Windows/macOS, where
+  # containers cannot reach the camera or microphone).
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+
+  # Text chat with the coach, fully containerized (any OS). Reads your
+  # workout history from ./data/workout_log.json for personalized answers.
+  coach:
+    build: .
+    image: ai-gym-coach
+    entrypoint: ["python", "coach_chat.py"]
+    command: []
+    stdin_open: true
+    tty: true
+    environment:
+      - COACH_LLM_BASE_URL=http://ollama:11434/v1
+      - COACH_LLM_MODEL=${COACH_MODEL:-llama3.2:3b}
+      - COACH_LOG=/data/workout_log.json
+    depends_on:
+      - ollama
+    volumes:
+      - ./data:/data
+
+  # Live workout + LLM coach in one container — Linux hosts only
+  # (webcam via /dev/video0, X11 window, ALSA audio for mic + speakers).
+  coach-live:
+    build: .
+    image: ai-gym-coach
+    command: ["--exercise", "${EXERCISE:-auto}", "--coach"]
+    stdin_open: true
+    tty: true
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/snd:/dev/snd
+    environment:
+      - DISPLAY=${DISPLAY:-}
+      - COACH_LLM_BASE_URL=http://ollama:11434/v1
+      - COACH_LLM_MODEL=${COACH_MODEL:-llama3.2:3b}
+      - COACH_LOG=/data/workout_log.json
+    depends_on:
+      - ollama
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./data:/data
+
+volumes:
+  ollama-models:
