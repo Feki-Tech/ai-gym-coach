@@ -28,9 +28,13 @@ docker compose exec ollama ollama pull llama3.2:3b   # once, ~2 GB
 The server persists models in a Docker volume and listens on
 `localhost:11434` — both containers *and* natively-running apps can use it.
 
-> Any Ollama model works: `qwen2.5:3b` (great multilingual), `llama3.1:8b`
-> (smarter, needs ~8 GB RAM), `gemma2:2b` (fastest). Set
-> `COACH_MODEL=qwen2.5:3b` (compose) or `--model qwen2.5:3b` (CLI).
+> **Model quality ladder** — pick per your RAM/patience:
+> `qwen2.5:0.5b` (smoke-test only, weak knowledge) → `llama3.2:3b` /
+> `qwen2.5:3b` (default; good coaching + multilingual) → `llama3.1:8b` /
+> `qwen2.5:7b` (strongest exercise-science answers, needs ~8 GB RAM).
+> Set `COACH_MODEL=…` (compose) or `--model …` (CLI). The app injects an
+> evidence-based coaching knowledge base into every model, so even small
+> models explain faults (e.g. knee valgus → weak hip abductors) correctly.
 
 ## 2. Chat with the coach
 
@@ -87,7 +91,14 @@ With `--coach` active:
 |---|---|
 | Ask by typing | type in the terminal where you launched the app, Enter |
 | Ask by voice | press **`c`** in the video window, speak (~6 s) |
-| Hear answers | replies are spoken via TTS and printed in the terminal |
+| Hear answers | replies stream in as they're generated and are spoken sentence-by-sentence via TTS |
+| Interrupt | just ask the next question — the coach stops talking instantly (barge-in); in standalone chat press Ctrl+C |
+
+Answers **stream**: text appears word-by-word and the voice starts with the
+first sentence instead of waiting for the full reply. Asking something new
+mid-answer cancels the old reply (the partial answer stays in the coach's
+memory, so follow-ups remain coherent). Pressing `c` to talk also silences
+the coach first so the mic doesn't record its own voice.
 
 The coach sees live session data — current exercise, phase, rep count, last
 score, fault counts, velocity loss — plus your history, and tailors its

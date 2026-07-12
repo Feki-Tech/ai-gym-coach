@@ -778,6 +778,7 @@ class Voice:
     def __init__(self, enabled=True):
         self.enabled = enabled
         self.q: queue.Queue[str | None] = queue.Queue()
+        self._engine = None
         if not enabled:
             return
         try:
@@ -796,6 +797,7 @@ class Voice:
         except Exception:
             self.enabled = False
             return
+        self._engine = engine
         while True:
             msg = self.q.get()
             if msg is None:
@@ -809,6 +811,26 @@ class Voice:
     def say(self, msg: str):
         if self.enabled and self.q.qsize() < 2:   # drop cues if backlogged
             self.q.put(msg)
+
+    def say_chat(self, msg: str):
+        """Chat sentences are never dropped (unlike backlogged form cues)."""
+        if self.enabled:
+            self.q.put(msg)
+
+    def interrupt(self):
+        """Barge-in: drop queued speech and cut the current utterance."""
+        if not self.enabled:
+            return
+        try:
+            while True:
+                self.q.get_nowait()
+        except queue.Empty:
+            pass
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
 
     def stop(self):
         if self.enabled:
@@ -1056,7 +1078,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                       "velocity_loss_pct": None, "plank_hold_s": None}
         chat = coach_chat.start_background_chat(
             state_provider=lambda: dict(live_state),
-            speak=voice.say, log_path=log_path)
+            speak=voice.say_chat, stop_speaking=voice.interrupt,
+            log_path=log_path)
         if not headless:
             print("Press 'c' in the video window to ask the coach by voice.")
 

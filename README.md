@@ -19,7 +19,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
-- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context — see [docs/COACH.md](docs/COACH.md)
+- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time and you can **interrupt** it anytime (barge-in) — see [docs/COACH.md](docs/COACH.md)
 
 ## Quick start
 
@@ -57,7 +57,11 @@ docker compose run --rm coach                  # text chat fully in Docker
 
 The coach sees your live session (reps, scores, faults, fatigue) and your
 training history, answers in your language, and speaks through your
-speakers. Private by default — the LLM runs on your machine. Full guide:
+speakers. Replies stream word-by-word, TTS starts at the first sentence,
+and asking a new question instantly interrupts the old answer. Grounded in
+an evidence-based coaching knowledge base (form faults, tempo, recovery,
+nutrition basics) with strict medical-safety guardrails. Private by
+default — the LLM runs on your machine. Full guide:
 **[docs/COACH.md](docs/COACH.md)**.
 
 ## Docker

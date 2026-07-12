@@ -16,7 +16,9 @@ Ollama server — private, free, no API key:
 The coach sees your training history (workout_log.json) and, when running
 inside pose_coach.py, the live session (exercise, reps, scores, faults,
 fatigue) — so you can ask "why are my squat scores dropping?" mid-set.
-It answers in the language you speak to it.
+It answers in the language you speak to it. Replies stream in live,
+are spoken sentence-by-sentence, and you can interrupt at any time:
+type a new question mid-answer (workout mode) or press Ctrl+C (chat mode).
 
 Config (env vars):
     COACH_LLM_BASE_URL   default http://localhost:11434/v1   (Ollama)
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import urllib.error
@@ -46,15 +49,39 @@ LISTEN_SECONDS = 6      # push-to-talk recording length
 
 PERSONA = """\
 You are "Coach", the friendly personal trainer inside the AI Gym Coach app.
-Style: encouraging, practical and concise — replies are read aloud, so keep
-them to 2-4 short sentences (under 70 words) unless the user asks for detail.
-Safety first: if the user mentions pain or injury, tell them to stop and see
-a professional. Always reply in the language of the user's last message.
-App facts you may rely on: supported exercises are squat, pushup, bench,
-deadlift, lunge, shoulder_press, curl, pullup and plank; the app counts reps,
-scores each rep 0-100, detects form faults, and estimates fatigue from
-rep-velocity loss. Use the data blocks below to give specific, personal
-advice; never invent numbers that are not in them."""
+Style: warm, encouraging and practical — celebrate effort, never shame.
+Replies are read aloud: default to 2-4 short sentences (under 70 words);
+go longer only when the user asks for detail. Always reply in the language
+of the user's last message.
+
+SAFETY (non-negotiable): you are not a doctor. Sharp, stabbing or radiating
+pain, numbness, dizziness or chest pain → tell the user to stop the set NOW
+and see a medical professional. Never diagnose conditions or prescribe
+medication. Dull muscle burn during a set and next-day soreness are normal.
+
+COACHING KNOWLEDGE you rely on (evidence-based, matches the app's fault codes):
+- knees_cave (knee valgus): usually weak glutes/hip abductors, not the
+  kneecap — cue "push your knees out over your toes"; build with banded
+  squats, side-lying hip abductions, glute bridges.
+- back_round / back_lean: brace the core, chest up, neutral spine; lighten
+  the load and hinge from the hips, not the lower back.
+- body_sag (plank/push-up): squeeze glutes and abs — one straight line.
+- elbow_flare: tuck elbows to ~45° from the torso to protect the shoulders.
+- elbow_swing (curls): pin elbows to your ribs; no momentum.
+- shallow: full range of motion beats heavy-and-short — reduce the weight
+  and own the bottom position.
+- too_fast: a 2-3 s lowering phase improves control and muscle growth.
+- Programming: progressive overload (small weekly rep/weight increases),
+  ~48 h rest per muscle group, stop 1-3 reps short of failure on most sets.
+- The app's fatigue warning fires at >20% rep-velocity loss — ending the
+  set there protects form quality.
+- Nutrition basics only: ~1.6-2.2 g protein per kg bodyweight daily,
+  hydrate; no diet prescriptions.
+
+APP FACTS: exercises = squat, pushup, bench, deadlift, lunge,
+shoulder_press, curl, pullup, plank; reps are scored 0-100; "ref-sim" is
+similarity to the user's recorded golden rep. Use the data blocks below to
+give specific, personal advice; never invent numbers that are not in them."""
 
 
 class CoachOffline(RuntimeError):
@@ -72,16 +99,14 @@ class LLMClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def chat(self, messages: list[dict]) -> str:
-        payload = json.dumps({"model": self.model, "messages": messages,
-                              "stream": False}).encode()
+    def _open(self, payload: dict):
         req = urllib.request.Request(
-            self.base_url + "/chat/completions", data=payload,
+            self.base_url + "/chat/completions",
+            data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {self.api_key}"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode())
+            return urllib.request.urlopen(req, timeout=self.timeout)
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -103,10 +128,58 @@ class LLMClient:
                 "or point COACH_LLM_BASE_URL / COACH_LLM_MODEL / "
                 "COACH_LLM_API_KEY at another OpenAI-compatible API."
             ) from e
+
+    def chat(self, messages: list[dict]) -> str:
+        with self._open({"model": self.model, "messages": messages,
+                         "stream": False}) as resp:
+            data = json.loads(resp.read().decode())
         try:
             return data["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError, TypeError) as e:
             raise CoachOffline(f"Unexpected LLM response: {str(data)[:300]}") from e
+
+    def chat_stream(self, messages: list[dict]):
+        """Yield reply text deltas as the model produces them (SSE)."""
+        resp = self._open({"model": self.model, "messages": messages,
+                           "stream": True})
+        try:
+            with resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        delta = data and json.loads(data)["choices"][0]["delta"]
+                    except (json.JSONDecodeError, KeyError, IndexError,
+                            TypeError):
+                        continue
+                    if delta and delta.get("content"):
+                        yield delta["content"]
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise CoachOffline("Connection to the LLM was lost "
+                               "mid-reply — is the backend still up?") from e
+
+
+# ---------------------------------------------------------- text streaming
+_SENT_END = re.compile(r"(.*?(?:[.!?…](?=\s|$)|[؟。！？]))\s*", re.S)
+
+
+def split_sentences(buf: str) -> tuple[list[str], str]:
+    """Split complete sentences off the front of a streaming text buffer.
+
+    Returns (sentences, remainder). Handles ., !, ?, … plus Arabic ؟ and
+    CJK 。！？ so every app language can be spoken sentence-by-sentence.
+    """
+    out, pos = [], 0
+    for m in _SENT_END.finditer(buf):
+        s = m.group(1).strip()
+        if s:
+            out.append(s)
+        pos = m.end()
+    return out, buf[pos:]
 
 
 # ------------------------------------------------------- workout context
@@ -174,6 +247,28 @@ class ChatCoach:
         self.history.append({"role": "assistant", "content": reply})
         return reply
 
+    def ask_stream(self, text: str, cancel: threading.Event | None = None):
+        """Yield the reply in chunks as the model writes it.
+
+        If cancel is set mid-stream the answer stops early; whatever was
+        already said is kept in history (marked "…") so a follow-up
+        question stays coherent."""
+        self.history.append({"role": "user", "content": text})
+        self.history = self.history[-MAX_TURNS:]
+        messages = [{"role": "system", "content": self._system()}] + self.history
+        parts: list[str] = []
+        try:
+            for delta in self.client.chat_stream(messages):
+                if cancel is not None and cancel.is_set():
+                    parts.append(" …")
+                    break
+                parts.append(delta)
+                yield delta
+        finally:
+            reply = "".join(parts).strip()
+            if reply:
+                self.history.append({"role": "assistant", "content": reply})
+
 
 # ------------------------------------------------------------ voice I/O
 def voice_input_available() -> bool:
@@ -214,6 +309,7 @@ class _Speaker:
 
     def __init__(self, enabled: bool):
         self.enabled = enabled
+        self._engine = None
         if not enabled:
             return
         import queue
@@ -233,6 +329,7 @@ class _Speaker:
         except Exception:
             self.enabled = False
             return
+        self._engine = engine
         while True:
             msg = self.q.get()
             if msg is None:
@@ -247,15 +344,41 @@ class _Speaker:
         if self.enabled:
             self.q.put(msg)
 
+    def stop(self):
+        """Barge-in: drop queued sentences and cut the current one."""
+        if not self.enabled:
+            return
+        try:
+            while True:
+                self.q.get_nowait()
+        except Exception:
+            pass
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
+
 
 # ------------------------------------------- background chat for pose_coach
 class BackgroundChat:
-    """Terminal + push-to-talk chat running beside the workout loop."""
+    """Terminal + push-to-talk chat running beside the workout loop.
 
-    def __init__(self, coach: ChatCoach, speak=None):
+    Answers stream in live and are spoken sentence-by-sentence. Barge-in:
+    a new question typed (or spoken) while the coach is mid-answer cancels
+    the rest of the reply — text, speech and LLM stream — and is answered
+    next, so changing topic mid-sentence feels natural.
+    """
+
+    def __init__(self, coach: ChatCoach, speak=None, stop_speaking=None):
+        import queue
         self.coach = coach
         self.speak = speak or (lambda _msg: None)
+        self.stop_speaking = stop_speaking or (lambda: None)
+        self._cancel = threading.Event()
         self._busy = False
+        self._q: "queue.Queue[str]" = queue.Queue()
+        threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._stdin_loop, daemon=True).start()
 
     def _stdin_loop(self):
@@ -263,36 +386,56 @@ class BackgroundChat:
             for line in sys.stdin:
                 text = line.strip()
                 if text:
-                    self._ask(text)
+                    self.submit(text)
         except Exception:
             pass
 
-    def _ask(self, text: str):
+    def submit(self, text: str):
+        """Queue a question; interrupts any answer in progress (barge-in)."""
         if self._busy:
-            print("(coach is still answering the previous question)")
-            return
-        self._busy = True
-        try:
-            reply = self.coach.ask(text)
-            print(f"\n🏋️  Coach: {reply}\n")
-            self.speak(reply)
-        except CoachOffline as e:
-            print(f"\n(coach offline) {e}\n")
-        finally:
-            self._busy = False
+            self._cancel.set()
+            self.stop_speaking()
+            print("\n(interrupted — switching to your new question)")
+        self._q.put(text)
+
+    def _worker(self):
+        while True:
+            text = self._q.get()
+            self._busy = True
+            self._cancel.clear()
+            buf = ""
+            try:
+                print("\n🏋️  Coach: ", end="", flush=True)
+                for chunk in self.coach.ask_stream(text, cancel=self._cancel):
+                    print(chunk, end="", flush=True)
+                    buf += chunk
+                    sents, buf = split_sentences(buf)
+                    for s in sents:
+                        self.speak(s)
+                if buf.strip() and not self._cancel.is_set():
+                    self.speak(buf.strip())
+                print("\n")
+            except CoachOffline as e:
+                print(f"\n(coach offline) {e}\n")
+            finally:
+                self._busy = False
 
     def ask_async(self, text: str):
-        threading.Thread(target=self._ask, args=(text,), daemon=True).start()
+        self.submit(text)
 
     def push_to_talk(self):
-        """Record from the mic and send the transcript (needs voice extras)."""
-        if self._busy:
-            return
+        """Record from the mic and send the transcript (needs voice extras).
+
+        Pressing it while the coach is talking first silences the coach —
+        so the mic doesn't transcribe the TTS voice."""
         if not voice_input_available():
             print("(voice input needs: pip install -r requirements-voice.txt)")
             return
 
         def _worker():
+            if self._busy:
+                self._cancel.set()
+                self.stop_speaking()
             try:
                 text = record_and_transcribe()
             except Exception as e:
@@ -302,17 +445,18 @@ class BackgroundChat:
                 print("(heard nothing)")
                 return
             print(f"You (voice): {text}")
-            self._ask(text)
+            self.submit(text)
 
         threading.Thread(target=_worker, daemon=True).start()
 
 
-def start_background_chat(state_provider=None, speak=None,
+def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
                           log_path: str = DEFAULT_LOG) -> BackgroundChat:
     coach = ChatCoach(log_path=log_path, state_provider=state_provider)
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
-          f"{coach.client.base_url}) — type a question in this terminal.")
-    return BackgroundChat(coach, speak=speak)
+          f"{coach.client.base_url}) — type a question anytime; asking "
+          "again mid-answer interrupts the coach.")
+    return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking)
 
 
 # ------------------------------------------------------------ interactive
@@ -327,8 +471,8 @@ def interactive(args):
     print(f"AI Gym Coach chat — model {coach.client.model} @ "
           f"{coach.client.base_url}")
     print("Ask about your workouts, form, programming, nutrition basics.")
-    print("Commands: /quit" + ("   (empty line = talk with the mic)"
-                               if listen else ""))
+    print("Ctrl+C interrupts an answer. Commands: /quit"
+          + ("   (empty line = talk with the mic)" if listen else ""))
     while True:
         try:
             text = input("you> ").strip()
@@ -349,13 +493,23 @@ def interactive(args):
                 print("(heard nothing)")
                 continue
             print(f"you (voice)> {text}")
+        buf = ""
         try:
-            reply = coach.ask(text)
+            print("\ncoach> ", end="", flush=True)
+            for chunk in coach.ask_stream(text):
+                print(chunk, end="", flush=True)
+                buf += chunk
+                sents, buf = split_sentences(buf)
+                for s in sents:
+                    speaker.say(s)
+            if buf.strip():
+                speaker.say(buf.strip())
+            print("\n")
+        except KeyboardInterrupt:
+            speaker.stop()
+            print("\n(interrupted)\n")
         except CoachOffline as e:
-            print(f"(coach offline) {e}")
-            continue
-        print(f"\ncoach> {reply}\n")
-        speaker.say(reply)
+            print(f"\n(coach offline) {e}")
 
 
 # --------------------------------------------------------------- selftest
@@ -430,6 +584,90 @@ def selftest():
         sent = m.call_args[0][0]
         assert sent[0]["role"] == "system"
         assert len(sent) <= MAX_TURNS + 1
+    print("ok")
+
+    print("6) streaming SSE parse:", end=" ")
+
+    class FakeStream:
+        def __init__(self, lines): self.lines = lines
+        def __iter__(self): return iter(self.lines)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    lines = [b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+             b'\n',
+             b': keepalive\n',
+             b'data: {"choices":[{"delta":{"content":"Push "}}]}\n',
+             b'data: {"choices":[{"delta":{"content":"hard!"}}]}\n',
+             b'data: [DONE]\n',
+             b'data: {"choices":[{"delta":{"content":"IGNORED"}}]}\n']
+    with mock.patch.object(urllib.request, "urlopen",
+                           return_value=FakeStream(lines)):
+        chunks = list(LLMClient("http://x/v1", "m").chat_stream(
+            [{"role": "user", "content": "hi"}]))
+    assert chunks == ["Push ", "hard!"], chunks
+    print("ok")
+
+    print("7) sentence splitting (6 languages):", end=" ")
+    s, rest = split_sentences("Go deeper. Keep your chest up! And then")
+    assert s == ["Go deeper.", "Keep your chest up!"] and rest == "And then", (s, rest)
+    s, rest = split_sentences("Weight is 62.5 kg. Nice!")
+    assert s == ["Weight is 62.5 kg.", "Nice!"] and rest == "", (s, rest)
+    s, rest = split_sentences("هل تشعر بألم؟ توقف فوراً.")
+    assert len(s) == 2 and rest == "", (s, rest)
+    s, rest = split_sentences("加油！保持呼吸。继续")
+    assert len(s) == 2 and rest == "继续", (s, rest)
+    print("ok")
+
+    print("8) barge-in interrupts an answer:", end=" ")
+    import io
+    import time as _time
+    from contextlib import redirect_stdout
+
+    cancel = threading.Event()
+
+    def slow_stream(_msgs):
+        for i in range(50):
+            yield f"s{i}. "
+            _time.sleep(0.005)
+
+    with mock.patch.object(ChatCoach, "_system", return_value="sys"), \
+         mock.patch.object(LLMClient, "chat_stream",
+                           side_effect=lambda m: slow_stream(m)):
+        c = ChatCoach(client=LLMClient("http://x/v1"))
+        got = []
+        for chunk in c.ask_stream("q", cancel=cancel):
+            got.append(chunk)
+            if len(got) == 3:
+                cancel.set()
+        assert len(got) == 3, got
+        assert c.history[-1]["role"] == "assistant"
+        assert c.history[-1]["content"].endswith("…")   # partial reply kept
+
+    class FakeCoach:
+        def __init__(self): self.calls = []
+
+        def ask_stream(self, text, cancel=None):
+            self.calls.append(text)
+            for _ in range(100):
+                if cancel is not None and cancel.is_set():
+                    return
+                yield "x. "
+                _time.sleep(0.003)
+
+    stops: list[int] = []
+    fc = FakeCoach()
+    with redirect_stdout(io.StringIO()):
+        bc = BackgroundChat(fc, speak=lambda _s: None,
+                            stop_speaking=lambda: stops.append(1))
+        bc.submit("first")
+        _time.sleep(0.08)
+        bc.submit("second")                      # barge-in mid-answer
+        deadline = _time.time() + 8
+        while (len(fc.calls) < 2 or bc._busy) and _time.time() < deadline:
+            _time.sleep(0.02)
+    assert fc.calls == ["first", "second"], fc.calls
+    assert stops, "stop_speaking was not called on barge-in"
     print("ok")
 
     print("\nAll coach_chat selftests passed.")
