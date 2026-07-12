@@ -444,6 +444,74 @@ LIVE_RULES: dict[str, list] = {
 }
 
 
+# ------------------------------------------------- reference rep comparison
+REFERENCE_FILE = "references.json"
+REF_SAMPLES = 50
+
+
+def resample(values, n: int = REF_SAMPLES) -> np.ndarray:
+    """Linearly resample a 1-D sequence to n points."""
+    v = np.asarray(list(values), dtype=float)
+    if v.size == 0:
+        return np.zeros(n)
+    if v.size == 1:
+        return np.full(n, v[0])
+    return np.interp(np.linspace(0.0, 1.0, n), np.linspace(0.0, 1.0, v.size), v)
+
+
+def dtw_distance(a, b) -> float:
+    """Dynamic-time-warping distance normalized by path-length bound (n+m).
+
+    Classic O(n*m) DP with |a_i − b_j| local cost — tolerant to tempo
+    differences between two reps of the same movement, sensitive to shape
+    (depth, lockout, asymmetry of descent vs ascent).
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    n, m = a.size, b.size
+    if n == 0 or m == 0:
+        return float("inf")
+    D = np.full((n + 1, m + 1), np.inf)
+    D[0, 0] = 0.0
+    for i in range(1, n + 1):
+        cost = np.abs(a[i - 1] - b)
+        for j in range(1, m + 1):
+            D[i, j] = cost[j - 1] + min(D[i - 1, j], D[i, j - 1],
+                                        D[i - 1, j - 1])
+    return float(D[n, m]) / (n + m)
+
+
+def similarity(user_traj, ref_traj, tol_deg: float = 25.0) -> int:
+    """0-100: how closely a rep's angle trajectory matches the reference.
+
+    100 = same shape (tempo-normalized); 0 = mean DTW deviation ≥ tol_deg°.
+    """
+    d = dtw_distance(resample(user_traj), resample(ref_traj))
+    return int(round(max(0.0, 1.0 - d / tol_deg) * 100))
+
+
+def load_references(path: str = REFERENCE_FILE) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            refs = json.load(fh)
+        return refs if isinstance(refs, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_reference(exercise: str, traj, score: int,
+                   path: str = REFERENCE_FILE):
+    refs = load_references(path)
+    refs[exercise] = {
+        "recorded": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "score": score,
+        "trajectory": [round(float(x), 2) for x in resample(traj)],
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(refs, fh, indent=1)
+
+
 def live_faults(exercise: str, ang: dict, state: str) -> list[str]:
     return [f for f, pred in LIVE_RULES.get(exercise, []) if pred(ang, state)]
 
@@ -547,13 +615,15 @@ class WorkoutLog:
             "plank": None,
         }
 
-    def add_rep(self, ev: RepEvent, velocity: float | None = None):
+    def add_rep(self, ev: RepEvent, velocity: float | None = None,
+                similarity: int | None = None):
         self.session["reps"].append({
             "n": ev.count, "score": ev.score,
             "eccentric_s": round(ev.eccentric_s, 2),
             "concentric_s": round(ev.concentric_s, 2),
             "min_angle": round(ev.min_angle, 1),
             "velocity": round(velocity, 1) if velocity is not None else None,
+            "similarity": similarity,
             "faults": ev.faults,
         })
 
@@ -565,10 +635,12 @@ class WorkoutLog:
             s["plank"] = {"total_hold_s": round(plank.total, 1),
                           "best_streak_s": round(plank.best, 1)}
         reps = s["reps"]
+        sims = [r["similarity"] for r in reps if r.get("similarity") is not None]
         s["summary"] = {
             "reps": len(reps),
             "avg_score": round(sum(r["score"] for r in reps) / len(reps), 1) if reps else None,
             "avg_concentric_s": round(sum(r["concentric_s"] for r in reps) / len(reps), 2) if reps else None,
+            "avg_similarity": round(sum(sims) / len(sims), 1) if sims else None,
             "fault_counts": self._fault_counts(reps),
             "velocity_loss_pct": self._velocity_loss(reps),
         }
@@ -612,6 +684,9 @@ def print_summary(s: dict):
     if sm["reps"]:
         print(f"Reps: {sm['reps']}   avg score: {sm['avg_score']}/100   "
               f"avg concentric: {sm['avg_concentric_s']}s")
+        if sm.get("avg_similarity") is not None:
+            print(f"Reference similarity: {sm['avg_similarity']}/100 "
+                  f"(vs your recorded golden rep)")
         if sm.get("velocity_loss_pct") is not None:
             print(f"Velocity loss across set: {sm['velocity_loss_pct']}%"
                   + ("  (fatigue!)" if sm["velocity_loss_pct"] > 20 else ""))
@@ -704,7 +779,8 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 # --------------------------------------------------------------- main loop
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None,
-        coach: bool = False):
+        coach: bool = False, record_reference: bool = False,
+        reference_file: str = REFERENCE_FILE):
     import cv2
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
@@ -720,6 +796,20 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     plank = PlankTracker() if spec and spec.mode == "hold" else None
     fatigue = FatigueMonitor()
     voice, log = Voice(use_voice), WorkoutLog(log_path)
+
+    references = load_references(reference_file)
+    ref_traj = None
+    if not record_reference and spec:
+        ref_traj = (references.get(exercise) or {}).get("trajectory")
+        if ref_traj:
+            print(f"Scoring each rep against your reference rep "
+                  f"(recorded {references[exercise]['recorded']}).")
+    if record_reference:
+        print("Recording mode: the best rep of this set becomes the "
+              f"golden reference for future sessions ({reference_file}).")
+    rep_traj: list[float] = []
+    best_ref: tuple[int, list[float]] | None = None
+    last_sim = None
 
     chat = None
     if coach:
@@ -775,6 +865,10 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         exercise, spec = det, SPECS[det]
                         counter = RepCounter(spec)
                         plank = PlankTracker() if spec.mode == "hold" else None
+                        if not record_reference:
+                            ref_traj = (references.get(det) or {}).get("trajectory")
+                            if ref_traj:
+                                print("Reference rep found — scoring similarity.")
                         if chat:
                             live_state["exercise"] = det
                         print(f"Auto-detected exercise: {det} "
@@ -797,6 +891,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     for fault in faults_now:
                         counter.note_fault(fault)
                     ev = counter.update(ang[spec.signal], t)
+                    if counter.state != "IDLE" or ev:
+                        rep_traj.append(ang[spec.signal])   # in-rep trajectory
                     msg = feedback.push(faults_now, t)
                     if msg:
                         voice.say(msg)
@@ -807,7 +903,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         # concentric velocity proxy: ROM (deg) / lift time (s)
                         vel = (max(spec.lockout_above - ev.min_angle, 1.0)
                                / max(ev.concentric_s, 0.05))
-                        log.add_rep(ev, velocity=vel)
+                        sim = None
+                        if ref_traj:
+                            sim = similarity(rep_traj, ref_traj)
+                            last_sim = sim
+                        if record_reference and (best_ref is None
+                                                 or ev.score >= best_ref[0]):
+                            best_ref = (ev.score, list(rep_traj))
+                        rep_traj = []
+                        log.add_rep(ev, velocity=vel, similarity=sim)
                         if fatigue.add(vel):
                             feedback.current = FATIGUE_MSG
                             voice.say(FATIGUE_MSG)
@@ -819,22 +923,27 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         else:
                             voice.say(f"{ev.count}. {feedback.praise()}")
                         print(f"Rep {ev.count}: score {ev.score}  "
-                              f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
+                              + (f"ref-sim {sim}  " if sim is not None else "")
+                              + f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
                               f"vel {vel:.0f} deg/s  "
                               f"min {spec.signal} {ev.min_angle:.0f}  "
                               f"faults {ev.faults or 'none'}")
                         if chat:
                             live_state.update(
                                 reps=ev.count, last_score=ev.score,
+                                last_similarity=sim,
                                 fault_counts=WorkoutLog._fault_counts(
                                     log.session["reps"]),
                                 velocity_loss_pct=round(fatigue.loss * 100, 1)
                                 if fatigue.loss else None)
+                    elif counter.state == "IDLE":
+                        rep_traj = []           # discarded blip / idle frames
                     if chat:
                         live_state["phase"] = counter.state
                     hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
                             f"phase: {counter.state}"
-                            + (f"   last score: {last_score}" if last_score is not None else ""))
+                            + (f"   last score: {last_score}" if last_score is not None else "")
+                            + (f"   ref-sim: {last_sim}" if last_sim is not None else ""))
                     hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
                             f"trunk: {ang['trunk_lean']:4.1f}")
 
@@ -873,6 +982,14 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         print(f"Annotated video written to {output}")
     if not headless:
         cv2.destroyAllWindows()
+    if record_reference:
+        if best_ref:
+            save_reference(exercise, best_ref[1], best_ref[0], reference_file)
+            print(f"Reference rep saved for {exercise} (score {best_ref[0]}) "
+                  f"→ {reference_file}")
+            voice.say("Reference rep saved.")
+        else:
+            print("No completed rep — reference not saved.")
     summary = log.finish(exercise, time.time() - t0, plank)
     print_summary(summary)
     if plank:
@@ -1062,6 +1179,51 @@ def selftest():
         assert "total reps: 2" in out and "knee_valgus" in out
     print("OK")
 
+    print("14) DTW similarity:", end=" ")
+    t50 = [130 + 45 * math.cos(2 * math.pi * i / 50) for i in range(50)]
+    assert similarity(t50, t50) == 100                       # identical
+    t30 = [130 + 45 * math.cos(2 * math.pi * i / 30) for i in range(30)]
+    assert similarity(t30, t50) >= 95                        # tempo-invariant
+    shallow = [130 + 20 * math.cos(2 * math.pi * i / 50) for i in range(50)]
+    s_shallow = similarity(shallow, t50)
+    assert s_shallow < 80, s_shallow                         # half-depth penalized
+    flat = [170.0] * 50
+    assert similarity(flat, t50) < s_shallow                 # no movement worst
+    assert dtw_distance([], [1.0]) == float("inf")
+    assert len(resample([1, 2, 3], 50)) == 50 and resample([], 50).sum() == 0
+    print("OK (identity=100, tempo-proof, depth-sensitive)")
+
+    print("15) reference store:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        rp = os.path.join(td, "refs.json")
+        assert load_references(rp) == {}
+        save_reference("squat", t50, 92, rp)
+        save_reference("curl", t30, 88, rp)
+        refs = load_references(rp)
+        assert set(refs) == {"squat", "curl"}
+        assert len(refs["squat"]["trajectory"]) == REF_SAMPLES
+        assert refs["squat"]["score"] == 92
+        noisy = [v + 3 * math.sin(7.3 * i) for i, v in enumerate(t50)]
+        assert similarity(noisy, refs["squat"]["trajectory"]) > 80
+    print("OK (save/load roundtrip, noisy rep still >80)")
+
+    print("16) similarity in workout log:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "log.json")
+        wl = WorkoutLog(path)
+        wl.add_rep(RepEvent(1, 3.0, 2.0, 1.0, 85.0, True, [], 90),
+                   velocity=40.0, similarity=93)
+        wl.add_rep(RepEvent(2, 3.0, 2.0, 1.0, 88.0, True, [], 85),
+                   velocity=38.0, similarity=81)
+        s = wl.finish("squat", 20.0)
+        assert s["summary"]["avg_similarity"] == 87.0
+        assert s["reps"][0]["similarity"] == 93
+        wl2 = WorkoutLog(path)
+        wl2.add_rep(RepEvent(1, 3.0, 2.0, 1.0, 85.0, True, [], 90))
+        s2 = wl2.finish("squat", 20.0)
+        assert s2["summary"]["avg_similarity"] is None       # no reference used
+    print("OK (avg_similarity aggregated; None without reference)")
+
     print("\nAll selftests passed.")
 
 
@@ -1084,6 +1246,11 @@ if __name__ == "__main__":
                     help="conversational LLM coach: type questions in the "
                          "terminal or press 'c' for push-to-talk "
                          "(see docs/COACH.md)")
+    ap.add_argument("--record-reference", action="store_true",
+                    help="save this set's best rep as the golden reference; "
+                         "future sessions score every rep against it (DTW)")
+    ap.add_argument("--reference-file", default=REFERENCE_FILE,
+                    help=f"reference reps file (default {REFERENCE_FILE})")
     args = ap.parse_args()
     if args.selftest:
         selftest()
@@ -1091,4 +1258,6 @@ if __name__ == "__main__":
         print_stats(args.log_file)
     else:
         run(args.exercise, args.video, not args.no_voice, args.log_file,
-            headless=args.headless, output=args.output, coach=args.coach)
+            headless=args.headless, output=args.output, coach=args.coach,
+            record_reference=args.record_reference,
+            reference_file=args.reference_file)
