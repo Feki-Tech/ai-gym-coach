@@ -11,6 +11,10 @@ workout_log.json
 references.json
 coach_profile.db
 
+# Google Calendar credentials + tokens (never commit)
+google_credentials.json
+google_token.json
+
 # trained classifier weights + collected training data
 classifier.npz
 *.windows.jsonl

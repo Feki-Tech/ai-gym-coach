@@ -22,6 +22,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally — see [docs/COACH.md](docs/COACH.md)
 - **The coach remembers you** — a local athlete profile (SQLite, never uploaded) auto-learns your goals, injuries, equipment and preferences from conversation and personalises future coaching; `/profile` `/remember` `/forget` to inspect or edit — see [docs/COACH.md](docs/COACH.md)
 - **The coach drives the app** — ask it to switch exercise, set a rep goal, start a rest timer, enforce tempo or mute cues, and it happens live; it also sees your joint angles and environment (lighting, framing, visibility) for smarter advice — see [docs/COACH.md](docs/COACH.md)
+- **Google Calendar** — connect once and the coach checks your week and books training sessions with you ("when can I train?" → "Tuesday 18:00 is free — book it?"); only calendar-events access, tokens stay local — see [docs/COACH.md §5](docs/COACH.md)
 
 ## Quick start
 

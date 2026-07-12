@@ -45,7 +45,9 @@ import threading
 import urllib.error
 import urllib.request
 from collections import deque
+from datetime import datetime
 
+import coach_calendar
 import coach_profile
 
 DEFAULT_BASE = os.environ.get("COACH_LLM_BASE_URL", "http://localhost:11434/v1")
@@ -117,6 +119,29 @@ set_tempo sets the lowering-phase seconds to enforce; cues mutes/unmutes
 the spoken form corrections. Confirm in one short sentence what you set.
 Never invent other action names; without a clear user request, no ACTION
 lines at all."""
+
+CALENDAR_PROMPT = """\
+CALENDAR — the athlete's Google Calendar is connected. You can use it
+ONLY through ACTION lines; the app executes them and reports back.
+STRICT RULES:
+1. You have ZERO knowledge of their schedule. NEVER state, guess or
+   invent events or free times from memory. To know anything, emit:
+ACTION: {"do": "calendar_check", "days": 7}
+   The app then sends you [APP DATA] with the real agenda — only after
+   that may you talk about their schedule or propose slots.
+2. An event exists ONLY when you emit (after the athlete agreed to an
+   exact date and time):
+ACTION: {"do": "calendar_book", "title": "Leg day", \
+"start": "2026-07-14T18:00", "minutes": 60}
+   The app announces the booking itself. NEVER claim something is
+   booked without emitting that line — that would be lying.
+3. "start" is local time YYYY-MM-DDTHH:MM; work out real dates from
+   the NOW line (e.g. "tomorrow 18:00" = NOW's date + 1 day).
+Example:
+  Athlete: when can I train this week?
+  You: Let me check your calendar.
+  ACTION: {"do": "calendar_check", "days": 7}
+  [APP DATA gives the agenda] → You: Tuesday evening is free — 18:00?"""
 
 
 class CoachOffline(RuntimeError):
@@ -267,6 +292,37 @@ def parse_actions(text: str) -> tuple[str, list[dict]]:
     return clean.strip(), actions
 
 
+def execute_calendar_action(calendar, action: dict) -> tuple[str, str | None]:
+    """Run a calendar_* action. Returns (spoken ack, feedback for the LLM).
+
+    Feedback (agenda data / error text) is sent back to the model as an
+    [APP DATA] message so it can finish answering with real facts.
+    """
+    do = action.get("do")
+    try:
+        if do == "calendar_check":
+            try:
+                days = min(max(int(action.get("days", 7) or 7), 1), 31)
+            except (TypeError, ValueError):
+                days = 7
+            return ("Let me check your calendar.",
+                    f"CALENDAR — next {days} days:\n" + calendar.agenda(days))
+        if do == "calendar_book":
+            title = str(action.get("title") or "Training with Coach")[:80]
+            try:
+                minutes = min(max(int(action.get("minutes", 60) or 60), 10),
+                              240)
+            except (TypeError, ValueError):
+                minutes = 60
+            when = calendar.book(title, str(action.get("start", "")), minutes)
+            return (f"Booked {title}: {when}.", None)
+    except coach_calendar.CalendarError as e:
+        return ("", f"CALENDAR ERROR: {e}")     # model explains / retries
+    except Exception as e:
+        return ("", f"CALENDAR ERROR: {e}")
+    return ("", None)
+
+
 # ------------------------------------------------------- workout context
 def progress_summary(log_path: str, limit: int = 6) -> str:
     """Compact text summary of the last sessions in workout_log.json."""
@@ -308,12 +364,14 @@ class ChatCoach:
     def __init__(self, client: LLMClient | None = None,
                  log_path: str = DEFAULT_LOG, state_provider=None,
                  profile: "coach_profile.ProfileStore | None" = None,
-                 actions: bool = False):
+                 actions: bool = False,
+                 calendar: "coach_calendar.CalendarClient | None" = None):
         self.client = client or LLMClient()
         self.log_path = log_path
         self.state_provider = state_provider   # () -> dict with live session
         self.profile = profile                 # long-term athlete facts
         self.actions = actions                 # app-control protocol enabled
+        self.calendar = calendar               # Google Calendar, if connected
         self.history: list[dict] = []          # user/assistant turns only
 
     def _system(self) -> str:
@@ -321,6 +379,10 @@ class ChatCoach:
                  progress_summary(self.log_path)]
         if self.actions:
             parts += ["", ACTIONS_PROMPT]
+        if self.calendar is not None:
+            parts += ["", CALENDAR_PROMPT]
+        parts += ["", "NOW: " + datetime.now().astimezone().strftime(
+            "%Y-%m-%d %H:%M, %A (UTC%z)")]
         if self.profile is not None:
             try:
                 block = self.profile.as_prompt()
@@ -758,6 +820,7 @@ class BackgroundChat:
         self.stop_speaking = stop_speaking or (lambda: None)
         self.tts_active = tts_active or (lambda: False)
         self.on_action = on_action     # callable(dict) -> ack str, or None
+        self.calendar = getattr(coach, "calendar", None)
         self._cancel = threading.Event()
         self._busy = False
         self._ptt = threading.Lock()   # one push-to-talk recording at a time
@@ -804,6 +867,16 @@ class BackgroundChat:
 
     def submit(self, text: str):
         """Queue a question; interrupts any answer in progress (barge-in)."""
+        if text.strip().lower() == "/calendar":
+            if self.calendar is None:
+                print("\n(calendar not connected — see docs/COACH.md §5, "
+                      "then: python coach_calendar.py --connect)")
+            else:
+                try:
+                    print("\n" + self.calendar.agenda(7))
+                except Exception as e:
+                    print(f"\n(calendar error: {e})")
+            return
         cmd_out = coach_profile.handle_command(
             getattr(self.coach, "profile", None), text)
         if cmd_out is not None:
@@ -815,12 +888,19 @@ class BackgroundChat:
             print("\n(interrupted — switching to your new question)")
         self._q.put(text)
 
-    def _say_or_act(self, text: str):
-        """Route a reply chunk: ACTION lines drive the app, the rest is spoken."""
+    def _say_or_act(self, text: str, feedback: list[str]):
+        """Route a reply chunk: ACTION lines drive the app or the calendar
+        (results collected into `feedback` for a second LLM pass), plain
+        text is spoken."""
         clean, acts = parse_actions(text)
         for a in acts:
             ack = None
-            if self.on_action is not None:
+            if str(a.get("do", "")).startswith("calendar_"):
+                if self.calendar is not None:
+                    ack, fb = execute_calendar_action(self.calendar, a)
+                    if fb:
+                        feedback.append(fb)
+            elif self.on_action is not None:
                 try:
                     ack = self.on_action(a)
                 except Exception as e:
@@ -831,23 +911,38 @@ class BackgroundChat:
         if clean:
             self.speak(clean)
 
+    def _answer_once(self, text: str) -> str | None:
+        """Stream one reply; returns [APP DATA] follow-up text when an
+        action produced data the model still needs (tool loop)."""
+        buf = ""
+        feedback: list[str] = []
+        print("\n🏋️  Coach: ", end="", flush=True)
+        for chunk in self.coach.ask_stream(text, cancel=self._cancel):
+            print(chunk, end="", flush=True)
+            buf += chunk
+            sents, buf = split_sentences(buf)
+            for s in sents:
+                self._say_or_act(s, feedback)
+        if buf.strip() and not self._cancel.is_set():
+            self._say_or_act(buf.strip(), feedback)
+        print("\n")
+        if feedback and not self._cancel.is_set():
+            return ("[APP DATA — automatic message from the app, not the "
+                    "athlete]\n" + "\n".join(feedback)
+                    + "\nNow answer the athlete's request using this data.")
+        return None
+
     def _worker(self):
         while True:
             text = self._q.get()
             self._busy = True
             self._cancel.clear()
-            buf = ""
             try:
-                print("\n🏋️  Coach: ", end="", flush=True)
-                for chunk in self.coach.ask_stream(text, cancel=self._cancel):
-                    print(chunk, end="", flush=True)
-                    buf += chunk
-                    sents, buf = split_sentences(buf)
-                    for s in sents:
-                        self._say_or_act(s)
-                if buf.strip() and not self._cancel.is_set():
-                    self._say_or_act(buf.strip())
-                print("\n")
+                followup = self._answer_once(text)
+                for _ in range(2):             # tool loop, hard-capped
+                    if not followup or self._cancel.is_set():
+                        break
+                    followup = self._answer_once(followup)
                 learn = getattr(self.coach, "learn_async", None)
                 if learn:
                     learn()
@@ -913,7 +1008,8 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
         except Exception:
             pass
     coach = ChatCoach(log_path=log_path, state_provider=state_provider,
-                      profile=profile, actions=on_action is not None)
+                      profile=profile, actions=on_action is not None,
+                      calendar=coach_calendar.connect_if_configured())
     coach.client.warm_up()      # load the LLM now, not on the first question
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
           f"{coach.client.base_url}) — type a question anytime; asking "
@@ -924,12 +1020,32 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
     if on_action is not None:
         print("The coach can drive the app: ask it to switch exercise, set "
               "a rep goal, start a rest timer, set tempo or mute cues.")
+    if coach.calendar is not None:
+        print("📅 Google Calendar connected — ask the coach to check your "
+              "week or book a training session. /calendar shows the agenda.")
     return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking,
                           tts_active=tts_active, hands_free=hands_free,
                           on_action=on_action)
 
 
 # ------------------------------------------------------------ interactive
+def _speak_or_calendar(sentence: str, coach: ChatCoach, speaker,
+                       feedback: list[str]):
+    """interactive(): speak plain text, run calendar ACTION lines."""
+    clean, acts = parse_actions(sentence)
+    for a in acts:
+        if (str(a.get("do", "")).startswith("calendar_")
+                and coach.calendar is not None):
+            ack, fb = execute_calendar_action(coach.calendar, a)
+            if fb:
+                feedback.append(fb)
+            if ack:
+                print(f"\n⚙️  {ack}")
+                speaker.say(ack)
+    if clean:
+        speaker.say(clean)
+
+
 def interactive(args):
     profile = None
     if not getattr(args, "no_profile", False):
@@ -938,7 +1054,8 @@ def interactive(args):
         except Exception as e:
             print(f"(profile store unavailable: {e})")
     coach = ChatCoach(LLMClient(args.base_url, args.model),
-                      log_path=args.log_file, profile=profile)
+                      log_path=args.log_file, profile=profile,
+                      calendar=coach_calendar.connect_if_configured())
     coach.client.warm_up()
     speaker = _Speaker(args.voice)
     if getattr(args, "hands_free", False):
@@ -966,8 +1083,12 @@ def interactive(args):
     print(f"AI Gym Coach chat — model {coach.client.model} @ "
           f"{coach.client.base_url}")
     print("Ask about your workouts, form, programming, nutrition basics.")
+    if coach.calendar is not None:
+        print("📅 Google Calendar connected — the coach can check your week "
+              "and book sessions. /calendar shows the agenda.")
     print("Ctrl+C interrupts an answer. Commands: /quit"
           + (" /profile /remember /forget" if profile is not None else "")
+          + (" /calendar" if coach.calendar is not None else "")
           + ("   (empty line = talk with the mic)" if listen else ""))
     while True:
         try:
@@ -977,6 +1098,12 @@ def interactive(args):
             break
         if text.lower() in ("/quit", "/exit", "quit", "exit"):
             break
+        if text.lower() == "/calendar" and coach.calendar is not None:
+            try:
+                print(coach.calendar.agenda(7))
+            except Exception as e:
+                print(f"(calendar error: {e})")
+            continue
         cmd_out = coach_profile.handle_command(profile, text)
         if cmd_out is not None:
             print(cmd_out)
@@ -993,18 +1120,27 @@ def interactive(args):
                 print("(heard nothing)")
                 continue
             print(f"you (voice)> {text}")
-        buf = ""
+        pending = text
         try:
-            print("\ncoach> ", end="", flush=True)
-            for chunk in coach.ask_stream(text):
-                print(chunk, end="", flush=True)
-                buf += chunk
-                sents, buf = split_sentences(buf)
-                for s in sents:
-                    speaker.say(s)
-            if buf.strip():
-                speaker.say(buf.strip())
-            print("\n")
+            for _round in range(3):            # question + up to 2 data passes
+                buf = ""
+                feedback: list[str] = []
+                print("\ncoach> ", end="", flush=True)
+                for chunk in coach.ask_stream(pending):
+                    print(chunk, end="", flush=True)
+                    buf += chunk
+                    sents, buf = split_sentences(buf)
+                    for s in sents:
+                        _speak_or_calendar(s, coach, speaker, feedback)
+                if buf.strip():
+                    _speak_or_calendar(buf.strip(), coach, speaker, feedback)
+                print("\n")
+                if not feedback:
+                    break
+                pending = ("[APP DATA — automatic message from the app, not "
+                           "the athlete]\n" + "\n".join(feedback)
+                           + "\nNow answer the athlete's request using this "
+                           "data.")
             coach.learn_async()
         except KeyboardInterrupt:
             speaker.stop()
@@ -1271,6 +1407,58 @@ def selftest():
     assert "APP CONTROL" in a_coach._system()
     no_a = ChatCoach(client=LLMClient("http://x/v1"), log_path="missing.json")
     assert "APP CONTROL" not in no_a._system()
+    print("ok")
+
+    print("12) calendar: prompt gating, check/data/answer loop, booking:",
+          end=" ")
+
+    class FakeCal:
+        def __init__(self):
+            self.booked = []
+        def agenda(self, days=7):
+            return "- Mon 13 Jul 09:00 to 09:30: Standup"
+        def book(self, title, start, minutes=60, description=""):
+            self.booked.append((title, start, minutes))
+            return "Tuesday 14 Jul 18:00–19:00"
+
+    fake_cal = FakeCal()
+    cal_coach = ChatCoach(client=LLMClient("http://x/v1"),
+                          log_path="missing.json", calendar=fake_cal)
+    assert "calendar_check" in cal_coach._system()
+    assert "NOW:" in cal_coach._system()
+    assert "calendar_check" not in no_a._system()
+    ack, fb = execute_calendar_action(
+        fake_cal, {"do": "calendar_check", "days": 3})
+    assert "Standup" in fb and ack
+    ack, fb = execute_calendar_action(
+        fake_cal, {"do": "calendar_book", "title": "Leg day",
+                   "start": "2026-07-14T18:00", "minutes": 45})
+    assert fb is None and "Booked Leg day" in ack and "18:00" in ack
+    assert fake_cal.booked == [("Leg day", "2026-07-14T18:00", 45)]
+
+    class CalCoach:                      # check → [APP DATA] → real answer
+        calendar = fake_cal
+        def __init__(self): self.asked = []
+        def ask_stream(self, text, cancel=None):
+            self.asked.append(text)
+            if text.startswith("[APP DATA"):
+                yield "Tuesday 18:00 is free — book it?"
+            else:
+                yield 'Let me look. ACTION: {"do": "calendar_check", "days": 7}'
+
+    cc = CalCoach()
+    spoken2: list[str] = []
+    with redirect_stdout(io.StringIO()):
+        bc3 = BackgroundChat(cc, speak=spoken2.append)
+        bc3.submit("when can I train this week?")
+        deadline = _time.time() + 5
+        while _time.time() < deadline and len(cc.asked) < 2:
+            _time.sleep(0.02)
+        _time.sleep(0.1)
+    assert len(cc.asked) == 2, cc.asked
+    assert cc.asked[1].startswith("[APP DATA") and "Standup" in cc.asked[1]
+    assert any("book it" in s for s in spoken2), spoken2
+    assert not any("{" in s for s in spoken2)
     print("ok")
 
     print("\nAll coach_chat selftests passed.")

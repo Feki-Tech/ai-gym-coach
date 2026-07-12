@@ -37,6 +37,8 @@ jobs:
         run: python coach_chat.py --selftest
       - name: Run athlete profile selftests
         run: python coach_profile.py --selftest
+      - name: Run calendar selftests
+        run: python coach_calendar.py --selftest
 
   docker:
     name: docker build + containerized selftest
@@ -62,6 +64,8 @@ jobs:
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_chat.py --selftest
       - name: Athlete profile selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_profile.py --selftest
+      - name: Calendar selftest inside container
+        run: docker run --rm --entrypoint python ai-gym-coach:ci coach_calendar.py --selftest
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3

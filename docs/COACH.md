@@ -189,6 +189,53 @@ Ollama backend, even the fact-extraction step runs locally. Inspect it
 anytime (`python coach_profile.py --show`) — it's a plain SQLite file
 you can delete whenever you like.
 
+## 5. Google Calendar — the coach plans training with you
+
+Connect your Google account once and the coach can **read your week and
+book training sessions** right from the conversation:
+
+> **You:** "When can I train this week?"
+> **Coach:** *(checks your calendar)* "Tuesday evening and Friday morning
+> are free. Tuesday 18:00 for legs?"
+> **You:** "Yes, book it."
+> **Coach:** ⚙️ Booked Leg day: Tuesday 14 Jul 18:00–19:00.
+
+### One-time setup (~3 minutes, free)
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) →
+   create a project → **APIs & Services → Library** → enable the
+   **Google Calendar API**.
+2. **OAuth consent screen** → External → fill the two required fields →
+   add your own Gmail address as a **test user**.
+3. **Credentials → Create credentials → OAuth client ID → Desktop app**
+   → **Download JSON** → save it as `google_credentials.json` next to
+   `pose_coach.py`.
+4. Connect (opens your browser once, sign in, allow):
+
+   ```bash
+   python coach_calendar.py --connect
+   ```
+
+Done. Every later start of `--coach` or `coach_chat.py` prints
+"📅 Google Calendar connected" automatically.
+
+| You can say | What happens |
+|---|---|
+| "what's my week look like?" | coach reads the next days and summarizes |
+| "find me a slot for legs" | coach proposes free times that fit your schedule |
+| "book Tuesday 18:00, one hour" | event lands in your Google Calendar |
+| `/calendar` | prints your 7-day agenda directly |
+
+Also: `python coach_calendar.py --agenda 7` prints the agenda without
+starting the app.
+
+**Privacy & safety**: the only permission requested is *calendar events*
+(scope `calendar.events`) — the coach cannot read mail, contacts or
+files. Tokens stay in `google_token.json` on your machine (git-ignored).
+With the default Ollama backend your agenda is only ever shown to the
+local model. The coach books events only after you agree to a specific
+time; delete `google_token.json` to disconnect at any moment.
+
 ## Config
 
 Environment variables (or CLI flags on `coach_chat.py`):
@@ -202,6 +249,8 @@ Environment variables (or CLI flags on `coach_chat.py`):
 | `COACH_PROFILE_DB` | `coach_profile.db` | athlete profile the coach remembers you with |
 | `COACH_WHISPER_MODEL` | `base` | speech-recognition model size (`tiny`/`base`/`small`) |
 | `COACH_MAX_TOKENS` | `300` | max reply length in tokens |
+| `GOOGLE_CREDENTIALS_FILE` | `google_credentials.json` | OAuth client JSON from Google Cloud (§5) |
+| `GOOGLE_TOKEN_FILE` | `google_token.json` | where the calendar tokens are stored |
 
 Examples: point it at **OpenAI** (`COACH_LLM_BASE_URL=https://api.openai.com/v1`,
 `COACH_LLM_MODEL=gpt-4o-mini`, `COACH_LLM_API_KEY=sk-…`) or any other

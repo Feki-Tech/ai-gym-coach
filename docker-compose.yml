@@ -80,6 +80,8 @@ services:
       - COACH_LLM_MODEL=${COACH_MODEL:-llama3.2:3b}
       - COACH_LOG=/data/workout_log.json
       - COACH_PROFILE_DB=/data/coach_profile.db
+      - GOOGLE_CREDENTIALS_FILE=/data/google_credentials.json
+      - GOOGLE_TOKEN_FILE=/data/google_token.json
     depends_on:
       - ollama
     volumes:
@@ -102,6 +104,8 @@ services:
       - COACH_LLM_MODEL=${COACH_MODEL:-llama3.2:3b}
       - COACH_LOG=/data/workout_log.json
       - COACH_PROFILE_DB=/data/coach_profile.db
+      - GOOGLE_CREDENTIALS_FILE=/data/google_credentials.json
+      - GOOGLE_TOKEN_FILE=/data/google_token.json
     depends_on:
       - ollama
     volumes:
