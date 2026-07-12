@@ -10,6 +10,7 @@ Usage:
     python pose_coach.py --exercise squat                 # webcam
     python pose_coach.py --exercise deadlift --video a.mp4
     python pose_coach.py --exercise plank --no-voice
+    python pose_coach.py --train-classifier               # ML auto-detect
     python pose_coach.py --selftest                       # no camera needed
 
 Exercises: squat, pushup, bench, deadlift, lunge, shoulder_press, curl,
@@ -358,6 +359,218 @@ class AutoDetector:
         if rom_elbow > 40 and overhead < 0.3:      # arms only, below head
             return "curl"
         return None
+
+
+# ------------------------------------------------- ML exercise classifier
+ML_CLASSES = ("curl", "deadlift", "lunge", "plank", "pullup", "pushup",
+              "shoulder_press", "squat")   # bench: manual-only (see AutoDetector)
+FEAT_KEYS = ("trunk", "knee", "elbow", "hip", "sho_y", "wri_y",
+             "torso", "overhead", "knee_split")
+NDIM = 4 * len(FEAT_KEYS) + 2
+MODEL_FILE = "classifier.npz"
+
+
+def window_features(frames: list[dict]) -> np.ndarray:
+    """Fixed-size vector from a window of frame_features dicts: per-channel
+    mean/std/min/max plus torso-normalized shoulder & wrist travel (the same
+    cues the rule-based detector keys on) -> NDIM dims."""
+    a = np.array([[float(f[k]) for k in FEAT_KEYS] for f in frames])
+    torso = max(float(a[:, FEAT_KEYS.index("torso")].mean()), 1e-3)
+    rom = lambda k: float(np.ptp(a[:, FEAT_KEYS.index(k)]))
+    return np.concatenate([a.mean(0), a.std(0), a.min(0), a.max(0),
+                           [rom("sho_y") / torso, rom("wri_y") / torso]])
+
+
+def synth_frames(exercise: str, rng: np.random.Generator,
+                 seconds: float = 2.0, fps: int = 30) -> list[dict]:
+    """Randomized synthetic feature stream for one exercise — amplitude,
+    tempo, phase and sensor noise all jittered. Bootstraps classifier
+    training without a labeled video dataset; blend in real recordings
+    with --collect."""
+    n = int(seconds * fps)
+    period, phase = rng.uniform(1.5, 4.0), rng.uniform(0, 2 * math.pi)
+    U = rng.uniform
+
+    def wave(lo, hi):
+        mid, amp = (lo + hi) / 2, (hi - lo) / 2
+        return [mid + amp * math.cos(2 * math.pi * t / (period * fps) + phase)
+                for t in range(n)]
+
+    const = lambda v: [v] * n
+    ch = dict(trunk=const(U(3, 15)), knee=const(U(165, 175)),
+              elbow=const(U(160, 175)), hip=const(U(165, 175)),
+              sho_y=const(U(0.25, 0.35)), wri_y=const(U(0.45, 0.6)),
+              torso=const(U(0.2, 0.3)), overhead=const(0.0),
+              knee_split=const(U(0.05, 0.15)))
+    if exercise == "squat":
+        ch.update(knee=wave(U(65, 95), U(160, 175)),
+                  hip=wave(U(80, 100), U(160, 175)),
+                  trunk=wave(U(3, 8), U(30, 50)))
+    elif exercise == "pushup":
+        ch.update(trunk=const(U(60, 85)),
+                  elbow=wave(U(80, 100), U(150, 170)))
+    elif exercise == "plank":
+        ch.update(trunk=const(U(60, 85)),
+                  elbow=const(U(70, 100) if rng.random() < 0.5
+                              else U(150, 175)))       # forearm or straight-arm
+    elif exercise == "pullup":
+        lo = U(0.22, 0.32)
+        ch.update(overhead=const(1.0), elbow=wave(U(50, 75), U(150, 170)),
+                  sho_y=wave(lo, lo + U(0.18, 0.32)), wri_y=const(U(0.06, 0.14)))
+    elif exercise == "shoulder_press":
+        ch.update(overhead=const(1.0), elbow=wave(U(85, 105), U(155, 175)),
+                  wri_y=wave(U(0.04, 0.1), U(0.24, 0.36)))
+    elif exercise == "deadlift":
+        ch.update(knee=wave(U(110, 130), U(160, 175)),
+                  hip=wave(U(85, 105), U(160, 175)),
+                  trunk=wave(U(8, 15), U(55, 75)))
+    elif exercise == "lunge":
+        ch.update(knee=wave(U(80, 105), U(160, 175)),
+                  knee_split=wave(U(0.05, 0.1), U(0.4, 0.6)),
+                  trunk=wave(U(3, 8), U(10, 25)))
+    elif exercise == "curl":
+        ch.update(elbow=wave(U(45, 70), U(145, 165)),
+                  wri_y=wave(U(0.3, 0.38), U(0.5, 0.6)))
+    else:
+        raise ValueError(f"no synthetic model for {exercise}")
+    frames = []
+    for i in range(n):
+        f = {k: v[i] for k, v in ch.items()}
+        for k, sd in (("trunk", 2), ("knee", 2), ("elbow", 2), ("hip", 2),
+                      ("sho_y", .008), ("wri_y", .008), ("torso", .004)):
+            f[k] += rng.normal(0, sd)
+        f["knee_split"] = abs(f["knee_split"] + rng.normal(0, .02))
+        frames.append(f)
+    return frames
+
+
+class TinyMLP:
+    """Two-layer numpy MLP (NDIM features -> ReLU hidden -> softmax classes).
+
+    ~1.5k parameters: trains in <1 s on CPU and ships without any deep
+    learning framework — same "small + local" philosophy as the rest of
+    the prototype.
+    """
+
+    def __init__(self, n_in: int = NDIM, n_hidden: int = 32,
+                 classes=ML_CLASSES, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        self.classes = [str(c) for c in classes]
+        self.W1 = rng.normal(0, math.sqrt(2 / n_in), (n_in, n_hidden))
+        self.b1 = np.zeros(n_hidden)
+        self.W2 = rng.normal(0, math.sqrt(2 / n_hidden),
+                             (n_hidden, len(self.classes)))
+        self.b2 = np.zeros(len(self.classes))
+        self.mu, self.sd = np.zeros(n_in), np.ones(n_in)
+
+    def _forward(self, Xn):
+        h = np.maximum(0.0, Xn @ self.W1 + self.b1)
+        z = h @ self.W2 + self.b2
+        z -= z.max(axis=1, keepdims=True)
+        p = np.exp(z)
+        return h, p / p.sum(axis=1, keepdims=True)
+
+    def predict_proba(self, x) -> np.ndarray:
+        Xn = (np.atleast_2d(np.asarray(x, dtype=float)) - self.mu) / self.sd
+        return self._forward(Xn)[1]
+
+    def fit(self, X, y, epochs: int = 300, lr: float = 0.05,
+            momentum: float = 0.9):
+        self.mu, self.sd = X.mean(0), X.std(0) + 1e-6
+        Xn = (X - self.mu) / self.sd
+        Y = np.eye(len(self.classes))[y]
+        params = (self.W1, self.b1, self.W2, self.b2)
+        vel = [np.zeros_like(p) for p in params]
+        for _ in range(epochs):
+            h, p = self._forward(Xn)
+            g = (p - Y) / len(Xn)                      # softmax-CE gradient
+            gh = g @ self.W2.T
+            gh[h <= 0] = 0.0
+            grads = (Xn.T @ gh, gh.sum(0), h.T @ g, g.sum(0))
+            for v, prm, grd in zip(vel, params, grads):
+                v *= momentum
+                v -= lr * grd
+                prm += v
+        return self
+
+    def save(self, path: str):
+        np.savez(path, W1=self.W1, b1=self.b1, W2=self.W2, b2=self.b2,
+                 mu=self.mu, sd=self.sd, classes=np.array(self.classes))
+
+    @classmethod
+    def load(cls, path: str) -> "TinyMLP":
+        d = np.load(path, allow_pickle=False)
+        m = cls(d["W1"].shape[0], d["W1"].shape[1],
+                [str(c) for c in d["classes"]])
+        m.W1, m.b1, m.W2, m.b2 = d["W1"], d["b1"], d["W2"], d["b2"]
+        m.mu, m.sd = d["mu"], d["sd"]
+        return m
+
+
+def build_dataset(samples_per_class: int = 120, seed: int = 0,
+                  collected: str | None = None):
+    """Synthetic windows for every class + optional real labeled windows
+    appended by --collect (JSONL rows {"label": ..., "x": [...]})"""
+    rng = np.random.default_rng(seed)
+    X, y = [], []
+    for ci, ex in enumerate(ML_CLASSES):
+        for _ in range(samples_per_class):
+            X.append(window_features(synth_frames(ex, rng)))
+            y.append(ci)
+    n_real = 0
+    if collected and os.path.exists(collected):
+        with open(collected, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("label") in ML_CLASSES and len(row.get("x", [])) == NDIM:
+                    X.append(np.asarray(row["x"], dtype=float))
+                    y.append(ML_CLASSES.index(row["label"]))
+                    n_real += 1
+    return np.array(X), np.array(y), n_real
+
+
+def train_classifier(model_path: str = MODEL_FILE,
+                     collected: str | None = None,
+                     samples_per_class: int = 120, epochs: int = 300,
+                     seed: int = 0) -> float:
+    """Train the exercise classifier and save weights; returns val accuracy."""
+    X, y, n_real = build_dataset(samples_per_class, seed, collected)
+    idx = np.random.default_rng(seed).permutation(len(X))
+    X, y = X[idx], y[idx]
+    n_val = max(1, len(X) // 5)
+    model = TinyMLP(seed=seed).fit(X[n_val:], y[n_val:], epochs=epochs)
+    pred = model.predict_proba(X[:n_val]).argmax(1)
+    acc = float((pred == y[:n_val]).mean())
+    print(f"Trained on {len(X) - n_val} windows ({samples_per_class}/class "
+          f"synthetic + {n_real} collected), validation accuracy {acc:.1%}")
+    for ci, ex in enumerate(ML_CLASSES):
+        m = y[:n_val] == ci
+        if m.any():
+            print(f"  {ex:15s} {float((pred[m] == ci).mean()):6.1%} "
+                  f"({int(m.sum())} val windows)")
+    model.save(model_path)
+    print(f"Model saved -> {model_path}")
+    return acc
+
+
+class MLDetector(AutoDetector):
+    """AutoDetector with the rule-based vote swapped for the trained MLP —
+    same sliding window, vote cadence, and 3-agreeing-votes lock-in."""
+
+    MIN_PROBA = 0.75
+
+    def __init__(self, model: TinyMLP):
+        super().__init__()
+        self.model = model
+
+    def _classify(self) -> str | None:
+        p = self.model.predict_proba(
+            window_features([x for _, x in self.buf]))[0]
+        ci = int(p.argmax())
+        return self.model.classes[ci] if p[ci] >= self.MIN_PROBA else None
 
 
 # ------------------------------------------------------------------ fatigue
@@ -780,11 +993,25 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None,
         coach: bool = False, record_reference: bool = False,
-        reference_file: str = REFERENCE_FILE):
+        reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
+        model_file: str = MODEL_FILE, collect: str | None = None):
     import cv2
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
-    detector = AutoDetector() if auto else None
+    detector = None
+    if auto:
+        use_ml = detector_kind == "ml" or (detector_kind == "auto"
+                                           and os.path.exists(model_file))
+        if use_ml:
+            if not os.path.exists(model_file):
+                sys.exit(f"No trained model at {model_file} — run "
+                         "'python pose_coach.py --train-classifier' first.")
+            detector = MLDetector(TinyMLP.load(model_file))
+            print(f"Auto-detect backend: ML classifier ({model_file})")
+        else:
+            detector = AutoDetector()
+            print("Auto-detect backend: rules "
+                  "(run --train-classifier once to upgrade to the ML model)")
 
     cap = cv2.VideoCapture(video if video else 0)
     if not cap.isOpened():
@@ -810,6 +1037,16 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     rep_traj: list[float] = []
     best_ref: tuple[int, list[float]] | None = None
     last_sim = None
+
+    collect_rows: list[dict] | None = None
+    if collect:
+        if auto:
+            print("--collect needs a fixed --exercise as the label; ignoring.")
+        else:
+            collect_rows = []
+            print(f"Collecting labeled training windows -> {collect}")
+    collect_buf: deque = deque()
+    next_collect_t = 2.0
 
     chat = None
     if coach:
@@ -854,6 +1091,16 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             if pts is not None:
                 pts = smoother.update(pts, t)
                 ang = body_angles(pts)
+
+                if collect_rows is not None:
+                    collect_buf.append((t, frame_features(ang, pts)))
+                    while collect_buf and t - collect_buf[0][0] > 2.0:
+                        collect_buf.popleft()
+                    if len(collect_buf) >= 20 and t >= next_collect_t:
+                        next_collect_t = t + 1.0
+                        collect_rows.append({"label": exercise, "x": [
+                            round(float(v), 5) for v in window_features(
+                                [f for _, f in collect_buf])]})
 
                 if spec is None:                            # ---- auto-detect
                     det = detector.update(frame_features(ang, pts), t)
@@ -990,6 +1237,13 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             voice.say("Reference rep saved.")
         else:
             print("No completed rep — reference not saved.")
+    if collect_rows:
+        with open(collect, "a", encoding="utf-8") as fh:
+            for row in collect_rows:
+                fh.write(json.dumps(row) + "\n")
+        print(f"Collected {len(collect_rows)} labeled windows -> {collect}  "
+              f"(retrain: python pose_coach.py --train-classifier "
+              f"--collect {collect})")
     summary = log.finish(exercise, time.time() - t0, plank)
     print_summary(summary)
     if plank:
@@ -1224,6 +1478,45 @@ def selftest():
         assert s2["summary"]["avg_similarity"] is None       # no reference used
     print("OK (avg_similarity aggregated; None without reference)")
 
+    print("17) ML feature windows:", end=" ")
+    rng = np.random.default_rng(1)
+    fr = synth_frames("squat", rng)
+    assert len(fr) == 60 and set(fr[0]) == set(FEAT_KEYS)
+    x = window_features(fr)
+    assert x.shape == (NDIM,) and np.isfinite(x).all()
+    sq = window_features(synth_frames("squat", np.random.default_rng(2)))
+    pu = window_features(synth_frames("pushup", np.random.default_rng(2)))
+    assert abs(sq[FEAT_KEYS.index("knee")] - pu[FEAT_KEYS.index("knee")]) > 20
+    print(f"OK ({NDIM}-dim, classes separable)")
+
+    print("18) classifier training:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        mp_ = os.path.join(td, "clf.npz")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            acc = train_classifier(mp_, samples_per_class=40, epochs=200)
+        assert acc >= 0.9, f"val accuracy only {acc:.1%}"
+        m = TinyMLP.load(mp_)
+        X, y, _ = build_dataset(samples_per_class=10, seed=7)
+        assert (m.predict_proba(X).argmax(1) == y).mean() >= 0.9
+    print(f"OK (val accuracy {acc:.1%}, save/load roundtrip)")
+
+    print("19) ML auto-detection:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        mp_ = os.path.join(td, "clf.npz")
+        with redirect_stdout(io.StringIO()):
+            train_classifier(mp_, samples_per_class=40, epochs=200)
+        model = TinyMLP.load(mp_)
+        rng = np.random.default_rng(3)
+        for expected in ("squat", "pushup", "curl", "shoulder_press"):
+            det = MLDetector(model)
+            frames = synth_frames(expected, rng, seconds=6.0)
+            got = None
+            for i, f in enumerate(frames):
+                got = det.update(f, i / 30.0) or got
+            assert got == expected, f"{expected} misread as {got}"
+    print("OK (4 movements classified by the MLP)")
+
     print("\nAll selftests passed.")
 
 
@@ -1251,13 +1544,30 @@ if __name__ == "__main__":
                          "future sessions score every rep against it (DTW)")
     ap.add_argument("--reference-file", default=REFERENCE_FILE,
                     help=f"reference reps file (default {REFERENCE_FILE})")
+    ap.add_argument("--train-classifier", action="store_true",
+                    help="train the ML exercise classifier on synthetic "
+                         "motion data (+ any --collect recordings), save "
+                         "weights, and report validation accuracy")
+    ap.add_argument("--detector", choices=("auto", "rules", "ml"),
+                    default="auto",
+                    help="auto-detect backend: ml = trained classifier, "
+                         "rules = heuristics, auto = ml when weights exist")
+    ap.add_argument("--model-file", default=MODEL_FILE,
+                    help=f"classifier weights file (default {MODEL_FILE})")
+    ap.add_argument("--collect", metavar="JSONL",
+                    help="with --exercise: append labeled feature windows "
+                         "from this session; with --train-classifier: also "
+                         "train on that file")
     args = ap.parse_args()
     if args.selftest:
         selftest()
     elif args.stats:
         print_stats(args.log_file)
+    elif args.train_classifier:
+        train_classifier(args.model_file, collected=args.collect)
     else:
         run(args.exercise, args.video, not args.no_voice, args.log_file,
             headless=args.headless, output=args.output, coach=args.coach,
             record_reference=args.record_reference,
-            reference_file=args.reference_file)
+            reference_file=args.reference_file, detector_kind=args.detector,
+            model_file=args.model_file, collect=args.collect)

@@ -15,6 +15,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Smoothing** — One Euro filter per keypoint with visibility gating
 - **Voice coaching** — prioritized, rate-limited cues via TTS ("Straighten your back", "Slow down", "Great form!")
 - **Auto exercise detection** — `--exercise auto` recognizes the movement from the skeleton (8 of 9 exercises; bench press needs manual selection)
+- **ML exercise classifier** — `--train-classifier` trains a small neural network (numpy MLP on windowed skeleton features, no extra deps) that replaces the rule-based detector; bootstrapped from synthetic motion data, improvable with your own recordings via `--collect`
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
@@ -31,6 +32,7 @@ python pose_coach.py --exercise plank --no-voice
 python pose_coach.py --exercise deadlift --video set1.mp4
 python pose_coach.py --exercise squat --record-reference   # save your best rep as the golden rep
 python pose_coach.py --exercise squat            # future reps get a ref-sim 0-100 score
+python pose_coach.py --train-classifier          # train the ML detector (~2 s, then auto uses it)
 python pose_coach.py --stats                     # progress dashboard from the log
 python pose_coach.py --selftest                  # verify install, no camera needed
 ```
@@ -132,7 +134,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] iOS localization: en · zh-Hans · hi · es · fr · ar (UI + voice coaching)
 - [x] Conversational LLM coach — talk to it by text/mic during workouts (Ollama in Docker), see [docs/COACH.md](docs/COACH.md)
 - [x] DTW comparison against expert reference reps (`--record-reference`)
-- [ ] ML exercise auto-classification (GRU/ST-GCN on normalized keypoints)
+- [x] ML exercise auto-classification — numpy MLP on windowed skeleton features (`--train-classifier`, `--collect`)
 - [ ] Android app (MediaPipe Tasks, Kotlin)
 
 ## Disclaimer

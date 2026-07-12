@@ -10,6 +10,10 @@ venv/
 workout_log.json
 references.json
 
+# trained classifier weights + collected training data
+classifier.npz
+*.windows.jsonl
+
 .idea/
 .vscode/
 
