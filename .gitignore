@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# downloaded pose model
+*.task
+
+# personal workout data
+workout_log.json
+
+.idea/
+.vscode/
