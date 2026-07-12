@@ -178,5 +178,6 @@ everything on your machine.
 | Push-to-talk says extras missing | `pip install -r requirements-voice.txt` (host Python, not Docker) |
 | Mic not picked up | check the OS default input device; `python -m sounddevice` lists devices |
 | `mic: off` / `PaErrorCode -9999` on Windows | **Microsoft Store Python is blocked from the microphone** on many machines. Install standard Python (`winget install Python.Python.3.12` or python.org), `py -3.12 -m pip install -r requirements.txt -r requirements-voice.txt`, run with `py -3.12 pose_coach.py …`. Also check Settings → Privacy & security → Microphone |
+| Mic is "listening" but never hears you | your OS **input volume** is probably very low (we've seen 8%!) — the app now warns at startup. Raise it: Settings → Sound → Input → Volume. The HUD `mic:` line shows a live level meter: bars should jump when you speak |
 | Coach hears itself | it shouldn't — the mic is gated during TTS. If your speakers are very loud and the room echoes, lower the volume slightly |
 | Coach replies not spoken | TTS uses pyttsx3 — see voice notes in [WEBCAM.md](WEBCAM.md) |

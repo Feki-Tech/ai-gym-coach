@@ -355,6 +355,40 @@ def _mic_hint() -> str:
             "that an input device is plugged in and set as default)")
 
 
+def _mic_volume_warning() -> str:
+    """Windows: warn when the OS input volume is so low the coach is deaf.
+
+    Found in the field: a mic at 8 % input volume opens fine and streams
+    near-silence — everything 'works' except nothing is ever heard."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import comtypes
+        try:
+            comtypes.CoInitialize()          # we're called from a thread
+        except Exception:
+            pass
+        from comtypes import CLSCTX_ALL
+        from pycaw.constants import EDataFlow, ERole
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        dev = AudioUtilities.GetDeviceEnumerator().GetDefaultAudioEndpoint(
+            EDataFlow.eCapture.value, ERole.eConsole.value)
+        vol = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL,
+                           None).QueryInterface(IAudioEndpointVolume)
+        pct = round(vol.GetMasterVolumeLevelScalar() * 100)
+        if vol.GetMute():
+            return ("WARNING: your microphone is MUTED in Windows — "
+                    "unmute it in Settings > Sound > Input")
+        if pct < 30:
+            return (f"WARNING: Windows mic input volume is only {pct}% — "
+                    "the coach probably can't hear you. Raise it in "
+                    "Settings > Sound > Input > Volume (or: Sound Control "
+                    "Panel > Recording > Microphone > Levels)")
+    except Exception:
+        pass
+    return ""
+
+
 def _load_whisper():
     global _whisper_model
     with _whisper_lock:
@@ -365,9 +399,18 @@ def _load_whisper():
     return _whisper_model
 
 
+def _normalize(audio, target: float = 0.5, max_gain: float = 30.0):
+    """Peak-normalize quiet audio so Whisper hears low-gain mics."""
+    import numpy as np
+    peak = float(np.abs(audio).max())
+    if 0 < peak < target:
+        audio = audio * min(max_gain, target / peak)
+    return audio
+
+
 def _transcribe_audio(audio) -> str:
     """1-D float32 mono @ 16 kHz -> text ('' for silence/junk)."""
-    segments, _info = _load_whisper().transcribe(audio)
+    segments, _info = _load_whisper().transcribe(_normalize(audio))
     parts = [s.text.strip() for s in segments
              if getattr(s, "no_speech_prob", 0.0) < 0.6
              and getattr(s, "avg_logprob", 0.0) > -1.35]
@@ -400,7 +443,7 @@ class VadSegmenter:
 
     def __init__(self, block_s: float = 0.03, start_blocks: int = 4,
                  end_silence_s: float = 0.9, max_utt_s: float = 15.0,
-                 min_floor: float = 0.0025):
+                 min_floor: float = 0.0008):
         self.block_s = block_s
         self.start_blocks = start_blocks
         self.end_blocks = max(1, int(end_silence_s / block_s))
@@ -459,6 +502,7 @@ class HandsFreeListener:
         self.on_text = on_text
         self.tts_active = tts_active or (lambda: False)
         self.state = "starting"
+        self.level = 0.0               # rms/threshold ratio for HUD meters
         self._stop = threading.Event()
         self._gate_until = 0.0
         threading.Thread(target=self._loop, daemon=True).start()
@@ -487,6 +531,9 @@ class HandsFreeListener:
         vad = VadSegmenter()
         pre: deque = deque(maxlen=self.PRE_ROLL_BLOCKS)
         utt: list = []
+        warn = _mic_volume_warning()
+        if warn:
+            print(warn)
         self.state = "listening"
         with stream:
             while not self._stop.is_set():
@@ -500,8 +547,9 @@ class HandsFreeListener:
                 now = _t.monotonic()
                 if self.tts_active():
                     self._gate_until = now + self.TTS_HANGOVER_S
-                ev = vad.feed(float(np.sqrt(np.mean(mono ** 2))),
-                              gated=now < self._gate_until)
+                rms = float(np.sqrt(np.mean(mono ** 2)))
+                self.level = rms / vad.threshold
+                ev = vad.feed(rms, gated=now < self._gate_until)
                 if ev == "start":
                     utt = list(pre)
                     pre.clear()
@@ -651,6 +699,11 @@ class BackgroundChat:
         if self.listener is not None:
             return self.listener.state
         return "press c to talk"
+
+    @property
+    def mic_level(self) -> float:
+        """Live input level as a multiple of the VAD threshold (HUD meter)."""
+        return self.listener.level if self.listener is not None else 0.0
 
     def _stdin_loop(self):
         try:
@@ -1026,6 +1079,14 @@ def selftest():
     assert looks_like_speech("Music Music Music Music") == ""
     q = "How deep should I squat?"
     assert looks_like_speech(f"  {q} ") == q
+    import numpy as _np
+    quiet = _np.full(1600, 0.02, dtype="float32")      # low-gain mic
+    boosted = _normalize(quiet)
+    assert 0.45 <= float(_np.abs(boosted).max()) <= 0.55, boosted.max()
+    tiny = _np.full(1600, 0.004, dtype="float32")      # gain capped at 30x
+    assert abs(float(_np.abs(_normalize(tiny)).max()) - 0.12) < 0.01
+    loud = _np.full(1600, 0.8, dtype="float32")
+    assert _normalize(loud) is loud                    # untouched
     print("ok")
 
     print("10) athlete profile: prompt injection + auto-learning:", end=" ")

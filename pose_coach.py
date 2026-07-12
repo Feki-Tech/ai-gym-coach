@@ -1251,7 +1251,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     col = ((0, 220, 255) if "hearing" in st else
                            (80, 200, 80) if st == "listening" else
                            (200, 200, 200))
-                    cv2.putText(frame, f"mic: {st}", (10, 30 + 28 * 2),
+                    bars = "|" * min(10, int(chat.mic_level * 3))
+                    cv2.putText(frame, f"mic: {st} {bars}", (10, 30 + 28 * 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
                 if feedback.current:
                     cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),

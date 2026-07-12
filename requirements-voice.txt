@@ -3,3 +3,4 @@
 #   pip install -r requirements-voice.txt
 sounddevice>=0.4
 faster-whisper>=1.0
+pycaw>=20230407; sys_platform == 'win32'   # warns when the OS mic volume is too low
