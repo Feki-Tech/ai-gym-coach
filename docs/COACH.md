@@ -59,12 +59,13 @@ pip install -r requirements.txt
 # live workout + chat: type questions in the terminal while training
 python pose_coach.py --exercise auto --coach
 
-# push-to-talk with your MIC during the workout: press 'c' in the video
-# window, speak, and the coach answers through your speakers
+# hands-free voice chat during the workout: install the voice extras once
+# and just TALK — no key needed (the HUD shows "mic: listening")
 pip install -r requirements-voice.txt        # once (local speech-to-text)
 
 # or a standalone chat session (no camera):
 python coach_chat.py --voice                 # spoken replies
+python coach_chat.py --voice --hands-free    # open-mic conversation
 python coach_chat.py --voice --listen        # empty line = talk with mic
 python coach_chat.py --once "Plan my next workout"
 ```
@@ -89,16 +90,34 @@ With `--coach` active:
 
 | Action | How |
 |---|---|
+| Ask by voice | **just speak** — the open mic segments your speech automatically (hands-free) |
 | Ask by typing | type in the terminal where you launched the app, Enter |
-| Ask by voice | press **`c`** in the video window, speak (~6 s) |
 | Hear answers | replies stream in as they're generated and are spoken sentence-by-sentence via TTS |
-| Interrupt | just ask the next question — the coach stops talking instantly (barge-in); in standalone chat press Ctrl+C |
+| Interrupt | press **`c`** in the video window — the coach shuts up and the mic opens instantly; or just type |
 
 Answers **stream**: text appears word-by-word and the voice starts with the
 first sentence instead of waiting for the full reply. Asking something new
 mid-answer cancels the old reply (the partial answer stays in the coach's
-memory, so follow-ups remain coherent). Pressing `c` to talk also silences
-the coach first so the mic doesn't record its own voice.
+memory, so follow-ups remain coherent).
+
+### Hands-free listening
+
+The HUD's third line shows the mic state:
+
+| `mic:` | Meaning |
+|---|---|
+| `listening` | open mic — just talk |
+| `hearing you...` | speech detected, recording your sentence |
+| `thinking...` | transcribing locally (Whisper) |
+| `answering...` | the coach is replying — **it cannot hear you now** |
+| `press c to talk` | voice extras not installed → push-to-talk only |
+| `off` | mic unavailable (see Troubleshooting) |
+
+There is no echo cancellation: while the coach talks through your speakers
+the mic is gated so it never hears its own voice. To barge in, press `c`
+(mutes the coach + reopens the mic immediately) or type your question. A
+built-in voice-activity detector adapts to room noise, ignores coughs and
+clanking plates, and a filter drops non-speech transcriptions.
 
 The coach sees live session data — current exercise, phase, rep count, last
 score, fault counts, velocity loss — plus your history, and tailors its
@@ -130,4 +149,6 @@ everything on your machine.
 | First answer is slow | the model loads into RAM on first request; subsequent replies are fast |
 | Push-to-talk says extras missing | `pip install -r requirements-voice.txt` (host Python, not Docker) |
 | Mic not picked up | check the OS default input device; `python -m sounddevice` lists devices |
+| `mic: off` / `PaErrorCode -9999` on Windows | **Microsoft Store Python is blocked from the microphone** on many machines. Install standard Python (`winget install Python.Python.3.12` or python.org), `py -3.12 -m pip install -r requirements.txt -r requirements-voice.txt`, run with `py -3.12 pose_coach.py …`. Also check Settings → Privacy & security → Microphone |
+| Coach hears itself | it shouldn't — the mic is gated during TTS. If your speakers are very loud and the room echoes, lower the volume slightly |
 | Coach replies not spoken | TTS uses pyttsx3 — see voice notes in [WEBCAM.md](WEBCAM.md) |

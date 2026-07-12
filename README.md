@@ -19,7 +19,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
-- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time and you can **interrupt** it anytime (barge-in) — see [docs/COACH.md](docs/COACH.md)
+- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally — see [docs/COACH.md](docs/COACH.md)
 
 ## Quick start
 
@@ -50,8 +50,9 @@ docker compose up -d ollama                          # local LLM in Docker
 docker compose exec ollama ollama pull llama3.2:3b   # once
 
 python pose_coach.py --exercise auto --coach   # chat while you train
-                                               # ('c' in the window = ask by mic)
-python coach_chat.py --voice --listen          # standalone voice chat
+                                               # (hands-free: just speak;
+                                               #  'c' = interrupt the coach)
+python coach_chat.py --voice --hands-free      # standalone voice chat
 docker compose run --rm coach                  # text chat fully in Docker
 ```
 

@@ -38,6 +38,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from collections import deque
 
 DEFAULT_BASE = os.environ.get("COACH_LLM_BASE_URL", "http://localhost:11434/v1")
 DEFAULT_MODEL = os.environ.get("COACH_LLM_MODEL", "llama3.2:3b")
@@ -282,13 +283,56 @@ def voice_input_available() -> bool:
 
 _whisper_model = None
 
+# Whisper hallucinates these on noise-only audio — never treat as a question.
+_JUNK = {"you", "you.", "uh", "um", "bye.", "thank you.", "thanks.",
+         "thank you very much.", "thanks for watching!",
+         "thank you for watching!", "subtitles by the amara.org community"}
+
+
+def looks_like_speech(text: str) -> str:
+    """Filter Whisper hallucinations; returns cleaned text or ''."""
+    t = text.strip()
+    if len(t) < 2 or not re.search(r"\w", t):
+        return ""
+    if t.lower() in _JUNK:
+        return ""
+    return t
+
+
+def _mic_hint() -> str:
+    """Actionable hint for the most common Windows mic blocker."""
+    import sys
+    if sys.platform == "win32" and "WindowsApps" in sys.executable:
+        return ("(hint: Microsoft Store Python cannot open the microphone "
+                "on many Windows setups — install Python from python.org "
+                "or `winget install Python.Python.3.12` and run the app "
+                "with `py -3.12`)")
+    return ("(hint: check the OS microphone permission for this app, and "
+            "that an input device is plugged in and set as default)")
+
+
+def _load_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel("base", device="cpu",
+                                      compute_type="int8")
+    return _whisper_model
+
+
+def _transcribe_audio(audio) -> str:
+    """1-D float32 mono @ 16 kHz -> text ('' for silence/junk)."""
+    segments, _info = _load_whisper().transcribe(audio)
+    parts = [s.text.strip() for s in segments
+             if getattr(s, "no_speech_prob", 0.0) < 0.6
+             and getattr(s, "avg_logprob", 0.0) > -1.35]
+    return looks_like_speech(" ".join(p for p in parts if p))
+
 
 def record_and_transcribe(seconds: float = LISTEN_SECONDS) -> str:
     """Record from the default mic and transcribe locally (any language)."""
-    global _whisper_model
     import numpy as np
     import sounddevice as sd
-    from faster_whisper import WhisperModel
 
     rate = 16000
     print(f"🎤 listening for {seconds:.0f}s — speak now...")
@@ -297,19 +341,163 @@ def record_and_transcribe(seconds: float = LISTEN_SECONDS) -> str:
     sd.wait()
     if _whisper_model is None:
         print("(loading speech model — first time downloads ~150 MB)")
-        _whisper_model = WhisperModel("base", device="cpu",
-                                      compute_type="int8")
-    segments, _info = _whisper_model.transcribe(np.squeeze(audio))
-    text = " ".join(seg.text.strip() for seg in segments).strip()
-    return text
+    return _transcribe_audio(np.squeeze(audio))
+
+
+class VadSegmenter:
+    """Tiny energy-based voice-activity detector (pure logic, testable).
+
+    Feed one RMS value per audio block; returns "start" when an utterance
+    begins, "end" when it finishes, else None. The noise floor adapts to
+    the room. gated=True (coach currently talking) hard-resets detection
+    so the coach never triggers on its own voice.
+    """
+
+    def __init__(self, block_s: float = 0.03, start_blocks: int = 4,
+                 end_silence_s: float = 0.9, max_utt_s: float = 15.0,
+                 min_floor: float = 0.0025):
+        self.block_s = block_s
+        self.start_blocks = start_blocks
+        self.end_blocks = max(1, int(end_silence_s / block_s))
+        self.max_blocks = int(max_utt_s / block_s)
+        self.min_floor = min_floor
+        self.floor = 0.01
+        self.in_speech = False
+        self._above = 0
+        self._silence = 0
+        self._utt = 0
+
+    @property
+    def threshold(self) -> float:
+        return max(3.5 * self.floor, 3 * self.min_floor)
+
+    def feed(self, rms: float, gated: bool = False) -> str | None:
+        if gated:
+            self.in_speech = False
+            self._above = self._silence = self._utt = 0
+            return None
+        if not self.in_speech:
+            if rms < self.threshold:
+                self.floor = 0.95 * self.floor + 0.05 * max(rms, self.min_floor)
+                self._above = 0
+                return None
+            self._above += 1
+            if self._above >= self.start_blocks:
+                self.in_speech = True
+                self._above = self._silence = self._utt = 0
+                return "start"
+            return None
+        self._utt += 1
+        self._silence = self._silence + 1 if rms < self.threshold else 0
+        if self._silence >= self.end_blocks or self._utt >= self.max_blocks:
+            self.in_speech = False
+            return "end"
+        return None
+
+
+class HandsFreeListener:
+    """Open-mic loop: VAD segments your speech -> local Whisper -> chat.
+
+    There is no acoustic echo cancellation, so the mic is *gated* while
+    the coach's TTS is talking (plus a short hangover) — it cannot hear
+    you over its own voice. Interrupt by typing, or press 'c' to silence
+    the coach and reopen the mic instantly.
+    """
+
+    RATE = 16000
+    BLOCK = 480                    # 30 ms
+    PRE_ROLL_BLOCKS = 15           # 450 ms of context kept before speech
+    MIN_SPEECH_S = 0.35
+    TTS_HANGOVER_S = 0.6
+
+    def __init__(self, on_text, tts_active=None):
+        self.on_text = on_text
+        self.tts_active = tts_active or (lambda: False)
+        self.state = "starting"
+        self._stop = threading.Event()
+        self._gate_until = 0.0
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def stop(self):
+        self._stop.set()
+
+    def open_gate_now(self):
+        """Skip the post-TTS hangover (push-to-talk barge-in)."""
+        self._gate_until = 0.0
+
+    def _loop(self):
+        import time as _t
+
+        import numpy as np
+        try:
+            import sounddevice as sd
+            stream = sd.InputStream(samplerate=self.RATE, channels=1,
+                                    dtype="float32", blocksize=self.BLOCK)
+            stream.start()
+        except Exception as e:
+            print(f"(hands-free mic unavailable: {e})")
+            print(_mic_hint())
+            self.state = "off"
+            return
+        vad = VadSegmenter()
+        pre: deque = deque(maxlen=self.PRE_ROLL_BLOCKS)
+        utt: list = []
+        self.state = "listening"
+        with stream:
+            while not self._stop.is_set():
+                try:
+                    data, _ = stream.read(self.BLOCK)
+                except Exception as e:
+                    print(f"(mic stream lost: {e})")
+                    self.state = "off"
+                    return
+                mono = np.squeeze(data)
+                now = _t.monotonic()
+                if self.tts_active():
+                    self._gate_until = now + self.TTS_HANGOVER_S
+                ev = vad.feed(float(np.sqrt(np.mean(mono ** 2))),
+                              gated=now < self._gate_until)
+                if ev == "start":
+                    utt = list(pre)
+                    pre.clear()
+                    self.state = "hearing you..."
+                if vad.in_speech:
+                    utt.append(mono)
+                else:
+                    pre.append(mono)
+                if ev != "end":
+                    continue
+                audio = np.concatenate(utt) if utt else np.zeros(1, "float32")
+                utt = []
+                speech_s = (len(audio) / self.RATE
+                            - vad.end_blocks * vad.block_s)
+                if speech_s < self.MIN_SPEECH_S:   # clank/cough blip
+                    self.state = "listening"
+                    continue
+                self.state = "thinking..."
+                text = ""
+                try:
+                    text = _transcribe_audio(audio)
+                except Exception as e:
+                    print(f"(transcription failed: {e})")
+                if text:
+                    print(f"\nYou (voice): {text}")
+                    self.on_text(text)
+                self.state = "listening"
 
 
 class _Speaker:
-    """Tiny background TTS (pyttsx3) so replies can be spoken."""
+    """Tiny background TTS (pyttsx3) so replies can be spoken.
+
+    The engine is disposed and re-created after every interrupt: Windows
+    SAPI often goes permanently silent if reused after engine.stop().
+    """
 
     def __init__(self, enabled: bool):
         self.enabled = enabled
         self._engine = None
+        self._speaking = False
+        self._interrupted = threading.Event()
         if not enabled:
             return
         import queue
@@ -323,26 +511,37 @@ class _Speaker:
 
     def _worker(self):
         import pyttsx3
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 175)
-        except Exception:
-            self.enabled = False
-            return
-        self._engine = engine
+        engine = None
         while True:
             msg = self.q.get()
             if msg is None:
                 return
+            if engine is None:
+                try:
+                    engine = pyttsx3.init()
+                    engine.setProperty("rate", 175)
+                except Exception:
+                    self.enabled = False
+                    return
+                self._engine = engine
+            self._speaking = True
             try:
                 engine.say(msg)
                 engine.runAndWait()
             except Exception:
-                pass
+                engine = self._engine = None
+            finally:
+                self._speaking = False
+            if self._interrupted.is_set():
+                self._interrupted.clear()
+                engine = self._engine = None    # never reuse after stop()
 
     def say(self, msg: str):
         if self.enabled:
             self.q.put(msg)
+
+    def is_speaking(self) -> bool:
+        return self.enabled and (self._speaking or not self.q.empty())
 
     def stop(self):
         """Barge-in: drop queued sentences and cut the current one."""
@@ -353,11 +552,14 @@ class _Speaker:
                 self.q.get_nowait()
         except Exception:
             pass
-        if self._engine is not None:
-            try:
-                self._engine.stop()
-            except Exception:
-                pass
+        if self._speaking:
+            self._interrupted.set()
+            eng = self._engine
+            if eng is not None:
+                try:
+                    eng.stop()
+                except Exception:
+                    pass
 
 
 # ------------------------------------------- background chat for pose_coach
@@ -370,16 +572,39 @@ class BackgroundChat:
     next, so changing topic mid-sentence feels natural.
     """
 
-    def __init__(self, coach: ChatCoach, speak=None, stop_speaking=None):
+    def __init__(self, coach: ChatCoach, speak=None, stop_speaking=None,
+                 tts_active=None, hands_free: bool = False):
         import queue
         self.coach = coach
         self.speak = speak or (lambda _msg: None)
         self.stop_speaking = stop_speaking or (lambda: None)
+        self.tts_active = tts_active or (lambda: False)
         self._cancel = threading.Event()
         self._busy = False
         self._q: "queue.Queue[str]" = queue.Queue()
+        self.listener: HandsFreeListener | None = None
+        if hands_free:
+            if voice_input_available():
+                self.listener = HandsFreeListener(
+                    on_text=self.submit,
+                    tts_active=lambda: self.tts_active() or self._busy)
+                print("🎤 Hands-free mic is ON — just speak; the coach "
+                      "answers. It can't hear you while it is talking "
+                      "(press 'c' to cut it off and ask right away).")
+            else:
+                print("(hands-free mic needs: pip install -r "
+                      "requirements-voice.txt — falling back to 'c' key)")
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._stdin_loop, daemon=True).start()
+
+    @property
+    def status(self) -> str:
+        """One-word state for HUDs: listening / hearing you... / ..."""
+        if self._busy:
+            return "answering..."
+        if self.listener is not None:
+            return self.listener.state
+        return "press c to talk"
 
     def _stdin_loop(self):
         try:
@@ -424,12 +649,19 @@ class BackgroundChat:
         self.submit(text)
 
     def push_to_talk(self):
-        """Record from the mic and send the transcript (needs voice extras).
+        """Voice question via the 'c' key.
 
-        Pressing it while the coach is talking first silences the coach —
-        so the mic doesn't transcribe the TTS voice."""
+        Hands-free mode: silences the coach and reopens the mic instantly
+        (barge-in). Otherwise: one ~6 s push-to-talk recording. Either way
+        the coach is muted first so the mic never hears its own voice."""
         if not voice_input_available():
             print("(voice input needs: pip install -r requirements-voice.txt)")
+            return
+        if self.listener is not None:
+            self._cancel.set()
+            self.stop_speaking()
+            self.listener.open_gate_now()
+            print("\n(coach muted — mic open, go ahead)")
             return
 
         def _worker():
@@ -440,6 +672,7 @@ class BackgroundChat:
                 text = record_and_transcribe()
             except Exception as e:
                 print(f"(mic/transcription failed: {e})")
+                print(_mic_hint())
                 return
             if not text:
                 print("(heard nothing)")
@@ -451,12 +684,14 @@ class BackgroundChat:
 
 
 def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
+                          tts_active=None, hands_free: bool = False,
                           log_path: str = DEFAULT_LOG) -> BackgroundChat:
     coach = ChatCoach(log_path=log_path, state_provider=state_provider)
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
           f"{coach.client.base_url}) — type a question anytime; asking "
           "again mid-answer interrupts the coach.")
-    return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking)
+    return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking,
+                          tts_active=tts_active, hands_free=hands_free)
 
 
 # ------------------------------------------------------------ interactive
@@ -464,6 +699,24 @@ def interactive(args):
     coach = ChatCoach(LLMClient(args.base_url, args.model),
                       log_path=args.log_file)
     speaker = _Speaker(args.voice)
+    if getattr(args, "hands_free", False):
+        if not voice_input_available():
+            print("--hands-free needs extras:  "
+                  "pip install -r requirements-voice.txt")
+        else:
+            import time
+            print(f"AI Gym Coach chat — model {coach.client.model} @ "
+                  f"{coach.client.base_url}")
+            BackgroundChat(coach, speak=speaker.say,
+                           stop_speaking=speaker.stop,
+                           tts_active=speaker.is_speaking, hands_free=True)
+            print("Speak anytime — typing works too. Ctrl+C quits.")
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print()
+            return
     listen = args.listen
     if listen and not voice_input_available():
         print("--listen needs extras:  pip install -r requirements-voice.txt")
@@ -670,6 +923,26 @@ def selftest():
     assert stops, "stop_speaking was not called on barge-in"
     print("ok")
 
+    print("9) VAD segments speech, gates during TTS, junk filter:", end=" ")
+    v = VadSegmenter()
+    for _ in range(100):
+        assert v.feed(0.002) is None          # adapting to room noise
+    seq = [v.feed(0.05) for _ in range(10)]   # someone talks
+    assert "start" in seq and v.in_speech
+    seq = [v.feed(0.001) for _ in range(40)]  # goes quiet
+    assert "end" in seq and not v.in_speech
+    v2 = VadSegmenter()
+    for _ in range(50):
+        v2.feed(0.002)
+    assert all(v2.feed(0.08, gated=True) is None for _ in range(30))
+    assert not v2.in_speech                   # coach's own voice ignored
+    assert looks_like_speech(" Thanks for watching! ") == ""
+    assert looks_like_speech("you") == ""
+    assert looks_like_speech("...") == ""
+    q = "How deep should I squat?"
+    assert looks_like_speech(f"  {q} ") == q
+    print("ok")
+
     print("\nAll coach_chat selftests passed.")
 
 
@@ -687,6 +960,9 @@ if __name__ == "__main__":
                     help="speak replies aloud (TTS)")
     ap.add_argument("--listen", action="store_true",
                     help="empty input records the mic (needs voice extras)")
+    ap.add_argument("--hands-free", action="store_true",
+                    help="open-mic conversation: just speak, no keys "
+                         "(needs voice extras)")
     ap.add_argument("--once", metavar="QUESTION",
                     help="ask one question, print the answer, exit")
     ap.add_argument("--selftest", action="store_true")

@@ -779,6 +779,8 @@ class Voice:
         self.enabled = enabled
         self.q: queue.Queue[str | None] = queue.Queue()
         self._engine = None
+        self._speaking = False
+        self._interrupted = threading.Event()
         if not enabled:
             return
         try:
@@ -791,22 +793,32 @@ class Voice:
 
     def _worker(self):
         import pyttsx3
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 175)
-        except Exception:
-            self.enabled = False
-            return
-        self._engine = engine
+        engine = None
         while True:
             msg = self.q.get()
             if msg is None:
                 return
+            if engine is None:      # fresh engine after start or interrupt
+                try:
+                    engine = pyttsx3.init()
+                    engine.setProperty("rate", 175)
+                except Exception:
+                    self.enabled = False
+                    return
+                self._engine = engine
+            self._speaking = True
             try:
                 engine.say(msg)
                 engine.runAndWait()
             except Exception:
-                pass
+                engine = self._engine = None
+            finally:
+                self._speaking = False
+            if self._interrupted.is_set():
+                # Windows SAPI can go permanently mute if an engine is
+                # reused after stop() — dispose it and start clean.
+                self._interrupted.clear()
+                engine = self._engine = None
 
     def say(self, msg: str):
         if self.enabled and self.q.qsize() < 2:   # drop cues if backlogged
@@ -817,6 +829,10 @@ class Voice:
         if self.enabled:
             self.q.put(msg)
 
+    def is_speaking(self) -> bool:
+        """True while talking or with queued speech (gates the open mic)."""
+        return self.enabled and (self._speaking or not self.q.empty())
+
     def interrupt(self):
         """Barge-in: drop queued speech and cut the current utterance."""
         if not self.enabled:
@@ -826,11 +842,14 @@ class Voice:
                 self.q.get_nowait()
         except queue.Empty:
             pass
-        if self._engine is not None:
-            try:
-                self._engine.stop()
-            except Exception:
-                pass
+        if self._speaking:
+            self._interrupted.set()
+            eng = self._engine
+            if eng is not None:
+                try:
+                    eng.stop()
+                except Exception:
+                    pass
 
     def stop(self):
         if self.enabled:
@@ -1079,9 +1098,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         chat = coach_chat.start_background_chat(
             state_provider=lambda: dict(live_state),
             speak=voice.say_chat, stop_speaking=voice.interrupt,
+            tts_active=voice.is_speaking, hands_free=not headless,
             log_path=log_path)
         if not headless:
-            print("Press 'c' in the video window to ask the coach by voice.")
+            print("Press 'c' in the video window to interrupt the coach "
+                  "and ask right away.")
 
     # video files use frame timestamps so processing speed doesn't skew
     # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
@@ -1225,6 +1246,13 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                 for k, line in enumerate((hud1, hud2)):
                     cv2.putText(frame, line, (10, 30 + 28 * k),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                if chat:
+                    st = chat.status
+                    col = ((0, 220, 255) if "hearing" in st else
+                           (80, 200, 80) if st == "listening" else
+                           (200, 200, 200))
+                    cv2.putText(frame, f"mic: {st}", (10, 30 + 28 * 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
                 if feedback.current:
                     cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
@@ -1559,8 +1587,8 @@ if __name__ == "__main__":
                     help="print progress dashboard from the workout log and exit")
     ap.add_argument("--selftest", action="store_true", help="run without camera")
     ap.add_argument("--coach", action="store_true",
-                    help="conversational LLM coach: type questions in the "
-                         "terminal or press 'c' for push-to-talk "
+                    help="conversational LLM coach: hands-free mic (just "
+                         "speak), typed questions, or 'c' to interrupt "
                          "(see docs/COACH.md)")
     ap.add_argument("--record-reference", action="store_true",
                     help="save this set's best rep as the golden reference; "
