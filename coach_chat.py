@@ -55,13 +55,16 @@ DEFAULT_LOG = os.environ.get("COACH_LOG", "workout_log.json")
 
 MAX_TURNS = 16          # user/assistant messages kept in context
 LISTEN_SECONDS = 6      # push-to-talk recording length
+# Spoken replies stay snappy on small local models; raise for long answers.
+MAX_REPLY_TOKENS = int(os.environ.get("COACH_MAX_TOKENS", "300"))
 
 PERSONA = """\
 You are "Coach", the friendly personal trainer inside the AI Gym Coach app.
 Style: warm, encouraging and practical — celebrate effort, never shame.
 Replies are read aloud: default to 2-4 short sentences (under 70 words);
-go longer only when the user asks for detail. Always reply in the language
-of the user's last message.
+go longer only when the user asks for detail. LANGUAGE RULE: write the
+entire reply in the language of the user's last message and never mix in
+words from any other language (English question = 100% English answer).
 
 SAFETY (non-negotiable): you are not a doctor. Sharp, stabbing or radiating
 pain, numbness, dizziness or chest pain → tell the user to stop the set NOW
@@ -89,8 +92,31 @@ COACHING KNOWLEDGE you rely on (evidence-based, matches the app's fault codes):
 
 APP FACTS: exercises = squat, pushup, bench, deadlift, lunge,
 shoulder_press, curl, pullup, plank; reps are scored 0-100; "ref-sim" is
-similarity to the user's recorded golden rep. Use the data blocks below to
-give specific, personal advice; never invent numbers that are not in them."""
+similarity to the user's recorded golden rep. The LIVE SESSION block gives
+you real physics and environment data: joint_angles_deg (current joint
+angles), last_rep (score, ecc_s/con_s tempo, rom_deg range of motion,
+vel_deg_s speed, faults), environment (brightness, pose visibility, how
+much of the body is in frame, fps, camera_hint) and coach_config (rep
+goal, rest timer, tempo target, cues on/off). Use these to give specific,
+personal advice — e.g. poor visibility/brightness → ask them to fix
+framing or lighting; never invent numbers that are not in the blocks."""
+
+ACTIONS_PROMPT = """\
+APP CONTROL — you can drive the app. When (and only when) the user asks
+for it or clearly agrees, end your reply with action lines, each on its
+own line, exactly in this form:
+ACTION: {"do": "set_exercise", "exercise": "squat"}
+ACTION: {"do": "set_rep_goal", "reps": 10}
+ACTION: {"do": "rest_timer", "seconds": 60}
+ACTION: {"do": "set_tempo", "eccentric_s": 3}
+ACTION: {"do": "cues", "enabled": false}
+set_exercise accepts squat, pushup, bench, deadlift, lunge,
+shoulder_press, curl, pullup, plank or "auto" (re-detect). set_rep_goal
+sets the target reps for this set; rest_timer starts a rest countdown;
+set_tempo sets the lowering-phase seconds to enforce; cues mutes/unmutes
+the spoken form corrections. Confirm in one short sentence what you set.
+Never invent other action names; without a clear user request, no ACTION
+lines at all."""
 
 
 class CoachOffline(RuntimeError):
@@ -140,6 +166,7 @@ class LLMClient:
 
     def chat(self, messages: list[dict]) -> str:
         with self._open({"model": self.model, "messages": messages,
+                         "max_tokens": MAX_REPLY_TOKENS,
                          "stream": False}) as resp:
             data = json.loads(resp.read().decode())
         try:
@@ -147,9 +174,28 @@ class LLMClient:
         except (KeyError, IndexError, TypeError) as e:
             raise CoachOffline(f"Unexpected LLM response: {str(data)[:300]}") from e
 
+    def warm_up(self):
+        """Pull the model into memory so the first real answer is instant.
+
+        Ollama loads a model on first use (seconds of cold start); a 1-token
+        background ping at startup pays that cost before the user speaks.
+        Best-effort: failures stay silent, the first question reports them.
+        """
+        def _ping():
+            try:
+                with self._open({"model": self.model, "max_tokens": 1,
+                                 "messages": [{"role": "user",
+                                               "content": "hi"}],
+                                 "stream": False}) as resp:
+                    resp.read()
+            except Exception:
+                pass
+        threading.Thread(target=_ping, daemon=True).start()
+
     def chat_stream(self, messages: list[dict]):
         """Yield reply text deltas as the model produces them (SSE)."""
         resp = self._open({"model": self.model, "messages": messages,
+                           "max_tokens": MAX_REPLY_TOKENS,
                            "stream": True})
         try:
             with resp:
@@ -189,6 +235,36 @@ def split_sentences(buf: str) -> tuple[list[str], str]:
             out.append(s)
         pos = m.end()
     return out, buf[pos:]
+
+
+# ------------------------------------------------------------ app actions
+_ACTION_INLINE = re.compile(r"(?:[-*•]\s*)?ACTION\s*:\s*(\{[^{}]*\})[.。]?",
+                            re.I)
+_ACTION_LINE = re.compile(r"^\s*(?:[-*•]\s*)?ACTION\s*:", re.I)
+
+
+def parse_actions(text: str) -> tuple[str, list[dict]]:
+    """Split 'ACTION: {json}' commands out of reply text.
+
+    Returns (clean_text_to_speak, actions). Valid actions are extracted
+    wherever they appear; any leftover line that still starts with
+    'ACTION:' (malformed JSON, unclosed brace) is dropped so raw JSON is
+    never read aloud to the user.
+    """
+    actions: list[dict] = []
+
+    def _grab(m: re.Match) -> str:
+        try:
+            obj = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            return m.group(0)          # leave it; the line filter drops it
+        if isinstance(obj, dict) and obj.get("do"):
+            actions.append(obj)
+        return ""
+    clean = _ACTION_INLINE.sub(_grab, text)
+    clean = "\n".join(line for line in clean.splitlines()
+                      if line.strip() and not _ACTION_LINE.match(line))
+    return clean.strip(), actions
 
 
 # ------------------------------------------------------- workout context
@@ -231,16 +307,20 @@ class ChatCoach:
 
     def __init__(self, client: LLMClient | None = None,
                  log_path: str = DEFAULT_LOG, state_provider=None,
-                 profile: "coach_profile.ProfileStore | None" = None):
+                 profile: "coach_profile.ProfileStore | None" = None,
+                 actions: bool = False):
         self.client = client or LLMClient()
         self.log_path = log_path
         self.state_provider = state_provider   # () -> dict with live session
         self.profile = profile                 # long-term athlete facts
+        self.actions = actions                 # app-control protocol enabled
         self.history: list[dict] = []          # user/assistant turns only
 
     def _system(self) -> str:
         parts = [PERSONA, "", "TRAINING HISTORY (most recent last):",
                  progress_summary(self.log_path)]
+        if self.actions:
+            parts += ["", ACTIONS_PROMPT]
         if self.profile is not None:
             try:
                 block = self.profile.as_prompt()
@@ -394,8 +474,10 @@ def _load_whisper():
     with _whisper_lock:
         if _whisper_model is None:
             from faster_whisper import WhisperModel
-            _whisper_model = WhisperModel("base", device="cpu",
-                                          compute_type="int8")
+            # COACH_WHISPER_MODEL=tiny halves transcription time if needed
+            _whisper_model = WhisperModel(
+                os.environ.get("COACH_WHISPER_MODEL", "base"),
+                device="cpu", compute_type="int8")
     return _whisper_model
 
 
@@ -410,7 +492,10 @@ def _normalize(audio, target: float = 0.5, max_gain: float = 30.0):
 
 def _transcribe_audio(audio) -> str:
     """1-D float32 mono @ 16 kHz -> text ('' for silence/junk)."""
-    segments, _info = _load_whisper().transcribe(_normalize(audio))
+    # greedy decode (beam 1) is 2-3x faster than the default beam of 5 and
+    # just as good on short gym questions; no cross-utterance conditioning
+    segments, _info = _load_whisper().transcribe(
+        _normalize(audio), beam_size=1, condition_on_previous_text=False)
     parts = [s.text.strip() for s in segments
              if getattr(s, "no_speech_prob", 0.0) < 0.6
              and getattr(s, "avg_logprob", 0.0) > -1.35]
@@ -442,7 +527,7 @@ class VadSegmenter:
     """
 
     def __init__(self, block_s: float = 0.03, start_blocks: int = 4,
-                 end_silence_s: float = 0.9, max_utt_s: float = 15.0,
+                 end_silence_s: float = 0.75, max_utt_s: float = 15.0,
                  min_floor: float = 0.0008):
         self.block_s = block_s
         self.start_blocks = start_blocks
@@ -666,12 +751,13 @@ class BackgroundChat:
     """
 
     def __init__(self, coach: ChatCoach, speak=None, stop_speaking=None,
-                 tts_active=None, hands_free: bool = False):
+                 tts_active=None, hands_free: bool = False, on_action=None):
         import queue
         self.coach = coach
         self.speak = speak or (lambda _msg: None)
         self.stop_speaking = stop_speaking or (lambda: None)
         self.tts_active = tts_active or (lambda: False)
+        self.on_action = on_action     # callable(dict) -> ack str, or None
         self._cancel = threading.Event()
         self._busy = False
         self._ptt = threading.Lock()   # one push-to-talk recording at a time
@@ -682,6 +768,8 @@ class BackgroundChat:
                 self.listener = HandsFreeListener(
                     on_text=self.submit,
                     tts_active=lambda: self.tts_active() or self._busy)
+                # preload Whisper now so the first utterance answers fast
+                threading.Thread(target=_load_whisper, daemon=True).start()
                 print("🎤 Hands-free mic is ON — just speak; the coach "
                       "answers. It can't hear you while it is talking "
                       "(press 'c' to cut it off and ask right away).")
@@ -727,6 +815,22 @@ class BackgroundChat:
             print("\n(interrupted — switching to your new question)")
         self._q.put(text)
 
+    def _say_or_act(self, text: str):
+        """Route a reply chunk: ACTION lines drive the app, the rest is spoken."""
+        clean, acts = parse_actions(text)
+        for a in acts:
+            ack = None
+            if self.on_action is not None:
+                try:
+                    ack = self.on_action(a)
+                except Exception as e:
+                    ack = f"(action failed: {e})"
+            if ack:
+                print(f"\n⚙️  {ack}")
+                self.speak(ack)
+        if clean:
+            self.speak(clean)
+
     def _worker(self):
         while True:
             text = self._q.get()
@@ -740,9 +844,9 @@ class BackgroundChat:
                     buf += chunk
                     sents, buf = split_sentences(buf)
                     for s in sents:
-                        self.speak(s)
+                        self._say_or_act(s)
                 if buf.strip() and not self._cancel.is_set():
-                    self.speak(buf.strip())
+                    self._say_or_act(buf.strip())
                 print("\n")
                 learn = getattr(self.coach, "learn_async", None)
                 if learn:
@@ -798,7 +902,8 @@ class BackgroundChat:
 def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
                           tts_active=None, hands_free: bool = False,
                           log_path: str = DEFAULT_LOG,
-                          profile_db: str | None = "") -> BackgroundChat:
+                          profile_db: str | None = "",
+                          on_action=None) -> BackgroundChat:
     """profile_db: "" = default file, None = memory disabled."""
     profile = None
     if profile_db is not None:
@@ -808,15 +913,20 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
         except Exception:
             pass
     coach = ChatCoach(log_path=log_path, state_provider=state_provider,
-                      profile=profile)
+                      profile=profile, actions=on_action is not None)
+    coach.client.warm_up()      # load the LLM now, not on the first question
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
           f"{coach.client.base_url}) — type a question anytime; asking "
           "again mid-answer interrupts the coach.")
     if profile is not None:
         print("The coach remembers you between sessions (local file "
               f"{profile.path}). Commands: /profile /remember /forget")
+    if on_action is not None:
+        print("The coach can drive the app: ask it to switch exercise, set "
+              "a rep goal, start a rest timer, set tempo or mute cues.")
     return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking,
-                          tts_active=tts_active, hands_free=hands_free)
+                          tts_active=tts_active, hands_free=hands_free,
+                          on_action=on_action)
 
 
 # ------------------------------------------------------------ interactive
@@ -829,6 +939,7 @@ def interactive(args):
             print(f"(profile store unavailable: {e})")
     coach = ChatCoach(LLMClient(args.base_url, args.model),
                       log_path=args.log_file, profile=profile)
+    coach.client.warm_up()
     speaker = _Speaker(args.voice)
     if getattr(args, "hands_free", False):
         if not voice_input_available():
@@ -1121,6 +1232,45 @@ def selftest():
         out = coach_profile.handle_command(store, "/profile")
         assert "first pull-up" in out
         assert coach_profile.handle_command(store, "not a command") is None
+    print("ok")
+
+    print("11) app-control actions: parse + routed, never spoken:", end=" ")
+    clean, acts = parse_actions(
+        'On it — squats next.\n'
+        'ACTION: {"do": "set_exercise", "exercise": "squat"}.\n'
+        'ACTION: {"do": "set_rep_goal", "reps": 10}')
+    assert [a["do"] for a in acts] == ["set_exercise", "set_rep_goal"]
+    assert clean == "On it — squats next." and "ACTION" not in clean
+    assert parse_actions("Plain advice only.") == ("Plain advice only.", [])
+    assert parse_actions('ACTION: {broken json') == ("", [])   # never spoken
+    assert parse_actions('action: {"do":"cues","enabled":false}')[1][0][
+        "enabled"] is False                                    # case + bool
+
+    class ActingCoach:
+        def ask_stream(self, text, cancel=None):
+            yield 'Rest time. '
+            yield 'Enjoy!\nACTION: {"do": "rest_timer", "seconds": 60}'
+
+    spoken: list[str] = []
+    fired: list[dict] = []
+    with redirect_stdout(io.StringIO()):
+        bc2 = BackgroundChat(ActingCoach(), speak=spoken.append,
+                             on_action=lambda a: fired.append(a)
+                             or f"Rest timer: {a['seconds']} seconds.")
+        bc2.submit("give me a minute")
+        deadline = _time.time() + 5
+        while _time.time() < deadline and not fired:
+            _time.sleep(0.02)
+        _time.sleep(0.1)               # let the ack reach the speaker
+    assert fired == [{"do": "rest_timer", "seconds": 60}], fired
+    assert "Rest time." in spoken and any("Enjoy!" in s for s in spoken)
+    assert any("Rest timer" in s for s in spoken), spoken
+    assert not any("{" in s or s.upper().startswith("ACTION") for s in spoken)
+    a_coach = ChatCoach(client=LLMClient("http://x/v1"),
+                        log_path="missing.json", actions=True)
+    assert "APP CONTROL" in a_coach._system()
+    no_a = ChatCoach(client=LLMClient("http://x/v1"), log_path="missing.json")
+    assert "APP CONTROL" not in no_a._system()
     print("ok")
 
     print("\nAll coach_chat selftests passed.")

@@ -33,6 +33,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+# MediaPipe's native layer logs startup warnings and telemetry errors
+# (clearcut uploader) that look scary but are harmless — silence them.
+os.environ.setdefault("GLOG_minloglevel", "3")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -1031,6 +1036,46 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 
 
 # --------------------------------------------------------------- main loop
+def apply_chat_action(action: dict, cfg: dict) -> str:
+    """Apply an LLM-coach action to the live session config (thread-safe:
+    only mutates dict values; the main loop consumes them).
+
+    Returns a short spoken acknowledgement, or '' for unknown/invalid
+    actions (the coach was told not to invent any, so stay silent).
+    """
+    do = str(action.get("do", ""))
+    try:
+        if do == "set_exercise":
+            name = str(action.get("exercise", "")).lower().replace(" ", "_")
+            if name == "auto" or name in SPECS:
+                cfg["switch_to"] = name
+                return ("Re-detecting your exercise." if name == "auto"
+                        else f"Switching to {name.replace('_', ' ')}.")
+            return f"I don't know the exercise {name}."
+        if do == "set_rep_goal":
+            n = int(action.get("reps", 0))
+            if 1 <= n <= 100:
+                cfg["rep_goal"] = n
+                return f"Rep goal set: {n}."
+        if do == "rest_timer":
+            s = float(action.get("seconds", 0))
+            if 5 <= s <= 900:
+                cfg["rest_until"] = time.time() + s
+                return f"Rest timer started: {int(s)} seconds."
+        if do == "set_tempo":
+            e = float(action.get("eccentric_s", 0))
+            if 0.5 <= e <= 10:
+                cfg["tempo_ecc_target"] = e
+                return f"Tempo target: {e:g} seconds down."
+        if do == "cues":
+            on = bool(action.get("enabled", True))
+            cfg["cues_on"] = on
+            return "Form cues back on." if on else "Form cues muted."
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None,
         coach: bool = False, record_reference: bool = False,
@@ -1039,20 +1084,23 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     import cv2
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
-    detector = None
-    if auto:
+
+    def make_detector(verbose: bool = True):
         use_ml = detector_kind == "ml" or (detector_kind == "auto"
                                            and os.path.exists(model_file))
         if use_ml:
             if not os.path.exists(model_file):
                 sys.exit(f"No trained model at {model_file} — run "
                          "'python pose_coach.py --train-classifier' first.")
-            detector = MLDetector(TinyMLP.load(model_file))
-            print(f"Auto-detect backend: ML classifier ({model_file})")
-        else:
-            detector = AutoDetector()
+            if verbose:
+                print(f"Auto-detect backend: ML classifier ({model_file})")
+            return MLDetector(TinyMLP.load(model_file))
+        if verbose:
             print("Auto-detect backend: rules "
                   "(run --train-classifier once to upgrade to the ML model)")
+        return AutoDetector()
+
+    detector = make_detector() if auto else None
 
     cap = cv2.VideoCapture(video if video else 0)
     if not cap.isOpened():
@@ -1090,16 +1138,26 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     next_collect_t = 2.0
 
     chat = None
+    session_cfg = {"switch_to": None, "rep_goal": None, "rest_until": 0.0,
+                   "tempo_ecc_target": None, "cues_on": True}
+
+    def say_cue(msg: str | None):
+        """Form/rep cues respect the coach's mute switch and rest timer."""
+        if msg and session_cfg["cues_on"] \
+                and time.time() >= session_cfg["rest_until"]:
+            voice.say(msg)
+
     if coach:
         import coach_chat
         live_state = {"exercise": None if auto else exercise, "phase": "IDLE",
-                      "reps": 0, "last_score": None, "fault_counts": {},
+                      "reps": 0, "last_rep": None, "fault_counts": {},
                       "velocity_loss_pct": None, "plank_hold_s": None}
         chat = coach_chat.start_background_chat(
             state_provider=lambda: dict(live_state),
             speak=voice.say_chat, stop_speaking=voice.interrupt,
             tts_active=voice.is_speaking, hands_free=not headless,
-            log_path=log_path)
+            log_path=log_path,
+            on_action=lambda a: apply_chat_action(a, session_cfg))
         if not headless:
             print("Press 'c' in the video window to interrupt the coach "
                   "and ask right away.")
@@ -1118,12 +1176,45 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         print(f"Auto-detect mode: start exercising. Press {quit_hint} to finish.")
         voice.say("Start exercising, I'll recognize the movement.")
     t0, ts_ms, frame_idx, last_score = time.time(), 0, 0, None
+    fps_live, last_frame_t, was_resting = fps, time.time(), False
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            now_t = time.time()
+            if 0 < now_t - last_frame_t < 1:
+                fps_live = 0.9 * fps_live + 0.1 / (now_t - last_frame_t)
+            last_frame_t = now_t
+
+            want = session_cfg["switch_to"]          # coach-driven switch
+            if want:
+                session_cfg["switch_to"] = None
+                rep_traj, last_sim, last_score = [], None, None
+                fatigue = FatigueMonitor()   # new movement, new baseline
+                if want == "auto":
+                    spec, counter, plank, ref_traj = None, None, None, None
+                    detector = make_detector(verbose=False)
+                    print("Coach: re-detecting the exercise.")
+                else:
+                    exercise, spec = want, SPECS[want]
+                    counter = RepCounter(spec)
+                    plank = PlankTracker() if spec.mode == "hold" else None
+                    ref_traj = ((references.get(want) or {}).get("trajectory")
+                                if not record_reference else None)
+                    print(f"Coach switched exercise -> {want} "
+                          f"(camera hint — {spec.camera_hint})")
+                if chat:
+                    live_state.update(
+                        exercise=None if want == "auto" else want,
+                        phase="IDLE", reps=0, last_rep=None)
+
+            rest_left = max(0.0, session_cfg["rest_until"] - time.time())
+            if was_resting and rest_left <= 0:
+                voice.say("Rest over — back to work!")
+            was_resting = rest_left > 0
+
             t = frame_idx / fps if video else time.time() - t0
             frame_idx += 1
             ts_ms = max(ts_ms + 1, int(t * 1000))
@@ -1135,6 +1226,31 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             if pts is not None:
                 pts = smoother.update(pts, t)
                 ang = body_angles(pts)
+
+                if chat:      # live physics + environment for the LLM coach
+                    live_state["joint_angles_deg"] = {
+                        k: round(float(ang[k]), 1)
+                        for k in ("knee", "hip", "elbow", "trunk_lean",
+                                  "body_line")}
+                    if frame_idx % 15 == 1:
+                        vis_mask = pts[:, 3] > VIS_MIN
+                        ys = pts[vis_mask, 1]
+                        live_state["environment"] = {
+                            "brightness_0_255": round(float(rgb.mean()), 1),
+                            "pose_visibility_pct": round(
+                                float(vis_mask.mean()) * 100, 1),
+                            "body_height_in_frame_pct": round(
+                                float(ys.max() - ys.min()) * 100, 1)
+                            if ys.size else 0.0,
+                            "camera_hint": spec.camera_hint if spec
+                            else "auto-detecting",
+                            "processing_fps": round(fps_live, 1)}
+                        live_state["coach_config"] = {
+                            "rep_goal": session_cfg["rep_goal"],
+                            "rest_left_s": int(rest_left),
+                            "tempo_ecc_target_s":
+                                session_cfg["tempo_ecc_target"],
+                            "cues_on": session_cfg["cues_on"]}
 
                 if collect_rows is not None:
                     collect_buf.append((t, frame_features(ang, pts)))
@@ -1169,9 +1285,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     faults_now = live_faults(exercise, ang, counter.state)
                     if plank.update(ang["body_line"], t):
                         faults_now.append("body_sag")
-                    msg = feedback.push(faults_now, t)
-                    if msg:
-                        voice.say(msg)
+                    say_cue(feedback.push(faults_now, t))
                     hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
                             f"best: {plank.best:5.1f}s")
                     hud2 = f"body line: {ang['body_line']:5.1f}"
@@ -1184,9 +1298,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     ev = counter.update(ang[spec.signal], t)
                     if counter.state != "IDLE" or ev:
                         rep_traj.append(ang[spec.signal])   # in-rep trajectory
-                    msg = feedback.push(faults_now, t)
-                    if msg:
-                        voice.say(msg)
+                    say_cue(feedback.push(faults_now, t))
                     if ev:
                         ev.faults = sorted(set(ev.faults) | set(rep_faults(spec, ev)))
                         ev.score = score_rep(ev)
@@ -1209,10 +1321,18 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                             print(f"Fatigue warning: velocity down "
                                   f"{fatigue.loss * 100:.0f}% from baseline")
                         elif ev.faults:
-                            cue = feedback.push(ev.faults, t)
-                            voice.say(f"{ev.count}. {cue or ''}")
+                            fcue = feedback.push(ev.faults, t)
+                            say_cue(f"{ev.count}. {fcue or ''}")
                         else:
-                            voice.say(f"{ev.count}. {feedback.praise()}")
+                            say_cue(f"{ev.count}. {feedback.praise()}")
+                        goal = session_cfg["rep_goal"]
+                        if goal and ev.count == goal:
+                            voice.say(f"That's {goal} — goal reached! "
+                                      "Take your rest.")
+                        tempo_tgt = session_cfg["tempo_ecc_target"]
+                        if tempo_tgt and ev.eccentric_s < tempo_tgt - 0.4:
+                            say_cue(f"Slower on the way down — aim for "
+                                    f"{tempo_tgt:g} seconds.")
                         print(f"Rep {ev.count}: score {ev.score}  "
                               + (f"ref-sim {sim}  " if sim is not None else "")
                               + f"ecc {ev.eccentric_s:.1f}s / con {ev.concentric_s:.1f}s  "
@@ -1221,8 +1341,17 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                               f"faults {ev.faults or 'none'}")
                         if chat:
                             live_state.update(
-                                reps=ev.count, last_score=ev.score,
-                                last_similarity=sim,
+                                reps=ev.count,
+                                last_rep={
+                                    "score": ev.score,
+                                    "ecc_s": round(ev.eccentric_s, 2),
+                                    "con_s": round(ev.concentric_s, 2),
+                                    "rom_deg": round(max(
+                                        spec.lockout_above - ev.min_angle,
+                                        0.0), 1),
+                                    "vel_deg_s": round(vel, 1),
+                                    "faults": ev.faults,
+                                    "similarity": sim},
                                 fault_counts=WorkoutLog._fault_counts(
                                     log.session["reps"]),
                                 velocity_loss_pct=round(fatigue.loss * 100, 1)
@@ -1231,8 +1360,10 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         rep_traj = []           # discarded blip / idle frames
                     if chat:
                         live_state["phase"] = counter.state
-                    hud1 = (f"{exercise.upper()}  reps: {counter.count}   "
-                            f"phase: {counter.state}"
+                    hud1 = (f"{exercise.upper()}  reps: {counter.count}"
+                            + (f"/{session_cfg['rep_goal']}"
+                               if session_cfg["rep_goal"] else "")
+                            + f"   phase: {counter.state}"
                             + (f"   last score: {last_score}" if last_score is not None else "")
                             + (f"   ref-sim: {last_sim}" if last_sim is not None else ""))
                     hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
@@ -1257,6 +1388,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                 if feedback.current:
                     cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
+
+            if rest_left > 0:                    # coach-set rest countdown
+                cv2.putText(frame, f"REST {int(rest_left) + 1}s",
+                            (10, frame.shape[0] - 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (60, 200, 255), 3)
 
             if output:
                 if writer is None:
@@ -1568,6 +1704,31 @@ def selftest():
                 got = det.update(f, i / 30.0) or got
             assert got == expected, f"{expected} misread as {got}"
     print("OK (4 movements classified by the MLP)")
+
+    print("20) LLM app-control actions:", end=" ")
+    cfg = {"switch_to": None, "rep_goal": None, "rest_until": 0.0,
+           "tempo_ecc_target": None, "cues_on": True}
+    ack = apply_chat_action({"do": "set_exercise", "exercise": "Squat"}, cfg)
+    assert "squat" in ack and cfg["switch_to"] == "squat"
+    assert apply_chat_action({"do": "set_exercise", "exercise": "auto"}, cfg)
+    assert cfg["switch_to"] == "auto"
+    assert "don't know" in apply_chat_action(
+        {"do": "set_exercise", "exercise": "yoga"}, cfg)
+    assert cfg["switch_to"] == "auto"           # invalid name doesn't switch
+    assert apply_chat_action({"do": "set_rep_goal", "reps": 12}, cfg)
+    assert cfg["rep_goal"] == 12
+    assert apply_chat_action({"do": "set_rep_goal", "reps": 0}, cfg) == ""
+    assert cfg["rep_goal"] == 12                # out-of-range rejected
+    t_now = time.time()
+    assert apply_chat_action({"do": "rest_timer", "seconds": 60}, cfg)
+    assert 55 <= cfg["rest_until"] - t_now <= 61
+    assert apply_chat_action({"do": "set_tempo", "eccentric_s": 3}, cfg)
+    assert cfg["tempo_ecc_target"] == 3
+    assert "muted" in apply_chat_action({"do": "cues", "enabled": False}, cfg)
+    assert cfg["cues_on"] is False
+    assert apply_chat_action({"do": "run_shell", "cmd": "rm -rf"}, cfg) == ""
+    assert apply_chat_action({"do": "set_rep_goal", "reps": "ten"}, cfg) == ""
+    print("ok")
 
     print("\nAll selftests passed.")
 

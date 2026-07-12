@@ -119,9 +119,48 @@ the mic is gated so it never hears its own voice. To barge in, press `c`
 built-in voice-activity detector adapts to room noise, ignores coughs and
 clanking plates, and a filter drops non-speech transcriptions.
 
-The coach sees live session data — current exercise, phase, rep count, last
-score, fault counts, velocity loss — plus your history, and tailors its
-answers ("your knees caved in 3 times this set — try a wider stance…").
+The coach sees live session data — current exercise, phase, rep count, the
+last rep's physics (score, tempo, range of motion, speed, faults), your
+**live joint angles**, the **environment** (image brightness, how much of
+your body is visible/in frame, camera view, processing fps) and its own
+config (rep goal, rest timer, tempo target) — plus your history, and
+tailors its answers ("your knees caved in 3 times this set — try a wider
+stance…", "the image is dark and only 60% of your body is visible — step
+back and add light").
+
+### The coach can drive the app
+
+During a workout (`--coach`) the coach doesn't just talk — ask it and it
+**acts**, by emitting validated commands the app executes:
+
+| Say something like | What happens |
+|---|---|
+| "switch me to squats" | app changes exercise (counter, form rules, reference rep reset) |
+| "let's do 10 reps" | rep goal set — HUD shows `reps: 3/10`, coach announces when you hit it |
+| "give me 90 seconds rest" | REST countdown on the HUD, "back to work" when it ends |
+| "make me lower in 3 seconds" | tempo target enforced — too-fast reps get a voice cue |
+| "stop correcting me" / "cues on" | mutes/unmutes the spoken form corrections |
+| "re-detect my exercise" | back to auto-detect mode |
+
+Under the hood the model appends machine-readable `ACTION: {json}` lines
+to its reply; the app validates them (unknown actions and out-of-range
+values are ignored), applies them to the live session and speaks a short
+confirmation. Action lines are never read aloud.
+
+### Making it feel fast
+
+Startup **warms the LLM up** in the background, so the first answer skips
+Ollama's cold model load (which can take 30+ s on CPU). Speech is
+transcribed with a greedy decode and answers stream sentence-by-sentence
+into the TTS. Tuning knobs:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COACH_WHISPER_MODEL` | `base` | `tiny` ≈ 2× faster transcription, slightly less accurate |
+| `COACH_MAX_TOKENS` | `300` | hard cap on reply length — lower = snappier answers |
+
+A smaller/faster LLM also helps: `COACH_LLM_MODEL=llama3.2:1b`. Keep the
+Ollama container running between sessions so the model stays warm.
 
 ## 4. The coach remembers you (athlete profile)
 
@@ -161,6 +200,8 @@ Environment variables (or CLI flags on `coach_chat.py`):
 | `COACH_LLM_API_KEY` | `ollama` | API key (only needed for hosted APIs) |
 | `COACH_LOG` | `workout_log.json` | history used for context |
 | `COACH_PROFILE_DB` | `coach_profile.db` | athlete profile the coach remembers you with |
+| `COACH_WHISPER_MODEL` | `base` | speech-recognition model size (`tiny`/`base`/`small`) |
+| `COACH_MAX_TOKENS` | `300` | max reply length in tokens |
 
 Examples: point it at **OpenAI** (`COACH_LLM_BASE_URL=https://api.openai.com/v1`,
 `COACH_LLM_MODEL=gpt-4o-mini`, `COACH_LLM_API_KEY=sk-…`) or any other
