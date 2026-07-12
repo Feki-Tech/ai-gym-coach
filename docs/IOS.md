@@ -23,8 +23,8 @@ uploaded — which also makes the App Store privacy questionnaire trivial.
 > No Mac? GitHub Actions builds the app on every push (see `.github/workflows/ci.yml`,
 > job `ios`) — it runs the CoachCore tests and compiles the app for the iOS
 > Simulator, so the code is always verified even when developing from
-> Windows/Linux. Signing and uploading still require a Mac (or a CI signing
-> setup with fastlane, see §5).
+> Windows/Linux. And the **TestFlight workflow** signs and uploads the app to
+> your iPhone entirely from CI — see §5. A Mac is never required.
 
 ## 2. Build & run
 
@@ -100,10 +100,46 @@ can copy it off the phone (Files app → GymCoach) and run
 8. Submit → typical review time is 24–48 h. Use **TestFlight** (internal
    testers, no review) to dogfood first.
 
-## 5. Suggested next steps
+## 5. TestFlight from CI — no Mac needed
 
-- **fastlane** (`fastlane gym` + `fastlane pilot`) to archive/upload from CI —
-  needs an App Store Connect API key stored as a GitHub secret.
+The repo ships a manual workflow (`.github/workflows/testflight.yml`) that
+builds, signs (Apple cloud-managed signing) and uploads the app to TestFlight
+entirely on GitHub's macOS runners. One-time setup:
+
+1. **Enroll** in the [Apple Developer Program](https://developer.apple.com/programs/enroll/)
+   ($99/year; approval is usually instant–48 h). You can do this from any
+   browser or from the iPhone itself.
+2. **Create the app record**: [App Store Connect](https://appstoreconnect.apple.com)
+   → *My Apps* → **＋ New App** — platform iOS, name e.g. “AI Gym Coach”,
+   bundle ID **`tech.fekitech.gymcoach`** (register it when prompted; must
+   match `project.yml`), SKU anything.
+3. **Create an API key**: App Store Connect → *Users and Access* →
+   [*Integrations → App Store Connect API*](https://appstoreconnect.apple.com/access/integrations/api)
+   → **＋** — role **App Manager**. Download the `.p8` file (one chance!),
+   note the **Key ID** and **Issuer ID** shown on that page.
+4. **Find your Team ID**: [developer.apple.com/account](https://developer.apple.com/account)
+   → Membership details → 10-character Team ID.
+5. **Add 4 repository secrets** (GitHub → repo → Settings → Secrets and
+   variables → Actions → New repository secret):
+
+   | Secret | Value |
+   |---|---|
+   | `APPLE_TEAM_ID` | 10-char Team ID, e.g. `AB12CD34EF` |
+   | `ASC_KEY_ID` | API Key ID, e.g. `2X9R4HXF34` |
+   | `ASC_ISSUER_ID` | Issuer ID (UUID) |
+   | `ASC_PRIVATE_KEY` | full text of the `.p8` file, including the BEGIN/END lines |
+
+6. **Run it**: repo → Actions → **TestFlight** → *Run workflow* (~10 min).
+7. **Install on the iPhone**: App Store Connect → your app → TestFlight →
+   add yourself under *Internal Testing* (once) → install the
+   [TestFlight app](https://apps.apple.com/app/testflight/id899247664) on the
+   phone → the build appears there after ~5–15 min of processing.
+
+Every later run uploads a new build (build number = CI run number) and
+TestFlight notifies your phone. Internal-tester builds need **no App Review**.
+
+## 6. Suggested next steps
+
 - App icon variants, localized listings, and a landscape iPad layout.
 - ARKit 3D body tracking (`ARBodyTrackingConfiguration`) for depth-aware
   joint angles on LiDAR devices.

@@ -1,0 +1,89 @@
+name: TestFlight
+
+# Builds, signs and uploads the iOS app to TestFlight — no Mac needed.
+# Trigger manually: Actions tab -> TestFlight -> Run workflow.
+# Requires 4 repo secrets (see docs/IOS.md §5): APPLE_TEAM_ID, ASC_KEY_ID,
+# ASC_ISSUER_ID, ASC_PRIVATE_KEY.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    name: Build, sign & upload to TestFlight
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          P8: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          missing=()
+          [ -z "$TEAM" ] && missing+=(APPLE_TEAM_ID)
+          [ -z "$KEY_ID" ] && missing+=(ASC_KEY_ID)
+          [ -z "$ISSUER" ] && missing+=(ASC_ISSUER_ID)
+          [ -z "$P8" ] && missing+=(ASC_PRIVATE_KEY)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}. Setup guide: docs/IOS.md §5"
+            exit 1
+          fi
+          echo "All secrets present."
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/GymCoach/project.yml --project ios/GymCoach
+
+      - name: Write App Store Connect API key
+        env:
+          P8: ${{ secrets.ASC_PRIVATE_KEY }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/private_keys"
+          printf '%s' "$P8" > "$HOME/private_keys/AuthKey_${KEY_ID}.p8"
+
+      - name: Archive (cloud-managed signing)
+        run: >
+          xcodebuild archive
+          -project ios/GymCoach/GymCoach.xcodeproj
+          -scheme GymCoach
+          -destination 'generic/platform=iOS'
+          -archivePath build/GymCoach.xcarchive
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8"
+          -authenticationKeyID '${{ secrets.ASC_KEY_ID }}'
+          -authenticationKeyIssuerID '${{ secrets.ASC_ISSUER_ID }}'
+          DEVELOPMENT_TEAM='${{ secrets.APPLE_TEAM_ID }}'
+          CODE_SIGN_STYLE=Automatic
+          CURRENT_PROJECT_VERSION=${{ github.run_number }}
+          -quiet
+
+      - name: Export & upload to App Store Connect
+        run: |
+          cat > build/ExportOptions.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>manageAppVersionAndBuildNumber</key><true/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath build/GymCoach.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
+            -authenticationKeyID '${{ secrets.ASC_KEY_ID }}' \
+            -authenticationKeyIssuerID '${{ secrets.ASC_ISSUER_ID }}'
+          echo "Uploaded. TestFlight processes the build in ~5-15 min."
