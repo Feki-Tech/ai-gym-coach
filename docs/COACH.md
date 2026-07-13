@@ -141,11 +141,29 @@ During a workout (`--coach`) the coach doesn't just talk — ask it and it
 | "make me lower in 3 seconds" | tempo target enforced — too-fast reps get a voice cue |
 | "stop correcting me" / "cues on" | mutes/unmutes the spoken form corrections |
 | "re-detect my exercise" | back to auto-detect mode |
+| "plan me a 15-minute leg workout and start it" | coach designs a **guided program** from your profile/history and runs it |
+| "stop the program" | back to free training |
 
 Under the hood the model appends machine-readable `ACTION: {json}` lines
 to its reply; the app validates them (unknown actions and out-of-range
 values are ignored), applies them to the live session and speaks a short
 confirmation. Action lines are never read aloud.
+
+### Guided workout programs
+
+A program is a list of blocks — `squat 3x10 rest 90, pushup 2x15 rest
+45, plank 2x40s rest 30` (`40s` = timed hold). Once one is running the
+app becomes the trainer: it counts every set, announces "Set 1 of 3
+done — rest 90 seconds", runs the countdown, switches exercises between
+blocks and celebrates when the session is complete. The HUD shows
+`program: block 1/3 squat set 2/3 (10 reps)` and the coach always knows
+where you are if you ask.
+
+You don't need the LLM for this — start one directly:
+
+```bash
+python pose_coach.py --exercise squat --program "squat 3x10 rest 90, pushup 2x15 rest 45, plank 2x40s"
+```
 
 ### Making it feel fast
 

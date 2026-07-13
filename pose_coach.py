@@ -24,6 +24,7 @@ import json
 import math
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -1036,6 +1037,130 @@ EDGES = [(L_SHO, R_SHO), (L_SHO, L_ELB), (L_ELB, L_WRI), (R_SHO, R_ELB),
 
 
 # --------------------------------------------------------------- main loop
+_EX_ALIASES = {
+    "push_up": "pushup", "bench_press": "bench", "bicep_curl": "curl",
+    "biceps_curl": "curl", "pull_up": "pullup", "chin_up": "pullup",
+    "overhead_press": "shoulder_press", "ohp": "shoulder_press",
+    "military_press": "shoulder_press", "press": "shoulder_press",
+}
+
+_BLOCK_RE = re.compile(
+    r"^\s*([A-Za-z][A-Za-z _-]*?)\s*(\d+)\s*[x×]\s*(\d+)\s*"
+    r"(s|sec|secs|seconds)?\s*(?:rest\s*(\d+)\s*(?:s|sec|secs|seconds)?)?\s*$",
+    re.I)
+
+
+def _normalize_exercise(name: str) -> str | None:
+    """'Push-ups' -> 'pushup'; returns None when nothing matches."""
+    n = re.sub(r"[\s\-]+", "_", name.strip().lower()).strip("_")
+    for cand in (n, n[:-1] if n.endswith("s") else n):
+        if cand in SPECS:
+            return cand
+        if cand in _EX_ALIASES:
+            return _EX_ALIASES[cand]
+    return None
+
+
+class WorkoutProgram:
+    """A guided session: ordered blocks of sets the app runs for you.
+
+    Text format (one block per comma): "squat 3x10 rest 90, pushup 2x15
+    rest 45, plank 2x40s rest 30". "40s" (or any number on a hold-type
+    exercise) means seconds held instead of reps. Rest defaults to 60 s.
+    """
+
+    def __init__(self, blocks: list[dict]):
+        self.blocks = blocks
+        self.bi = 0          # current block
+        self.si = 1          # current set within the block, 1-based
+
+    @staticmethod
+    def parse(text: str) -> "WorkoutProgram":
+        blocks = []
+        for raw in re.split(r"[,;\n]|\bthen\b", str(text), flags=re.I):
+            if not raw.strip():
+                continue
+            m = _BLOCK_RE.match(raw)
+            if not m:
+                raise ValueError(
+                    f"can't read '{raw.strip()}' — use e.g. 'squat 3x10 "
+                    "rest 60' or 'plank 2x40s'")
+            name, sets, num, secs, rest = m.groups()
+            ex = _normalize_exercise(name)
+            if ex is None:
+                raise ValueError(f"unknown exercise '{name.strip()}' — I know "
+                                 + ", ".join(sorted(SPECS)))
+            sets, num = int(sets), int(num)
+            hold = bool(secs) or SPECS[ex].mode == "hold"
+            if not 1 <= sets <= 10:
+                raise ValueError(f"sets must be 1-10 (got {sets})")
+            if hold and not 5 <= num <= 600:
+                raise ValueError(f"hold must be 5-600 seconds (got {num})")
+            if not hold and not 1 <= num <= 100:
+                raise ValueError(f"reps must be 1-100 (got {num})")
+            rest_s = min(int(rest), 900) if rest else 60
+            b = {"exercise": ex, "sets": sets, "rest_s": rest_s}
+            b["hold_s" if hold else "reps"] = num
+            blocks.append(b)
+        if not blocks:
+            raise ValueError("empty plan")
+        return WorkoutProgram(blocks)
+
+    @property
+    def current(self) -> dict | None:
+        return self.blocks[self.bi] if self.bi < len(self.blocks) else None
+
+    @staticmethod
+    def _target(b: dict) -> str:
+        return (f"{b['hold_s']} second hold" if "hold_s" in b
+                else f"{b['reps']} reps")
+
+    def overview(self) -> str:
+        return ", ".join(
+            f"{b['exercise'].replace('_', ' ')} {b['sets']}x"
+            + (f"{b['hold_s']}s" if "hold_s" in b else str(b["reps"]))
+            for b in self.blocks)
+
+    def describe(self) -> str | None:
+        b = self.current
+        if b is None:
+            return None
+        return (f"block {self.bi + 1}/{len(self.blocks)} "
+                f"{b['exercise']} set {self.si}/{b['sets']} "
+                f"({self._target(b)})")
+
+    def status(self) -> dict | None:
+        b = self.current
+        if b is None:
+            return None
+        return {"exercise": b["exercise"], "set": self.si,
+                "sets": b["sets"], "block": self.bi + 1,
+                "blocks": len(self.blocks), "target": self._target(b)}
+
+    def on_set_done(self) -> tuple[str, int, str]:
+        """Advance after a completed set.
+
+        Returns (announcement, rest seconds, what) with what in
+        'same' (next set, same exercise), 'next' (new block), 'done'.
+        """
+        b = self.blocks[self.bi]
+        if self.si < b["sets"]:
+            self.si += 1
+            return (f"Set {self.si - 1} of {b['sets']} done — rest "
+                    f"{b['rest_s']} seconds, then set {self.si}: "
+                    f"{self._target(b)}.", b["rest_s"], "same")
+        self.bi += 1
+        self.si = 1
+        if self.bi >= len(self.blocks):
+            return ("Workout complete — that was the last set. "
+                    "Amazing work today!", 0, "done")
+        nb = self.blocks[self.bi]
+        return (f"{b['exercise'].replace('_', ' ')} done! Rest "
+                f"{b['rest_s']} seconds, then "
+                f"{nb['exercise'].replace('_', ' ')}: {nb['sets']} sets "
+                f"of {self._target(nb)}.", b["rest_s"], "next")
+
+
 def apply_chat_action(action: dict, cfg: dict) -> str:
     """Apply an LLM-coach action to the live session config (thread-safe:
     only mutates dict values; the main loop consumes them).
@@ -1071,6 +1196,16 @@ def apply_chat_action(action: dict, cfg: dict) -> str:
             on = bool(action.get("enabled", True))
             cfg["cues_on"] = on
             return "Form cues back on." if on else "Form cues muted."
+        if do == "start_program":
+            try:
+                prog = WorkoutProgram.parse(action.get("plan", ""))
+            except ValueError as e:
+                return f"I couldn't read that plan: {e}."
+            cfg["program_new"] = prog
+            return f"Program loaded: {prog.overview()}. Let's go!"
+        if do == "stop_program":
+            cfg["program_stop"] = True
+            return "Program stopped — back to free training."
     except (TypeError, ValueError):
         pass
     return ""
@@ -1080,8 +1215,12 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None,
         coach: bool = False, record_reference: bool = False,
         reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
-        model_file: str = MODEL_FILE, collect: str | None = None):
+        model_file: str = MODEL_FILE, collect: str | None = None,
+        program: str | None = None):
     import cv2
+    prog_start = WorkoutProgram.parse(program) if program else None
+    if prog_start:                    # program decides the first exercise
+        exercise = prog_start.blocks[0]["exercise"]
     auto = exercise == "auto"
     spec = None if auto else SPECS[exercise]
 
@@ -1139,13 +1278,44 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
 
     chat = None
     session_cfg = {"switch_to": None, "rep_goal": None, "rest_until": 0.0,
-                   "tempo_ecc_target": None, "cues_on": True}
+                   "tempo_ecc_target": None, "cues_on": True,
+                   "program": None, "program_new": prog_start,
+                   "program_stop": False}
 
     def say_cue(msg: str | None):
         """Form/rep cues respect the coach's mute switch and rest timer."""
         if msg and session_cfg["cues_on"] \
                 and time.time() >= session_cfg["rest_until"]:
             voice.say(msg)
+
+    def advance_program():
+        """A set just finished — move the guided program forward."""
+        nonlocal counter, plank, rep_traj
+        prog = session_cfg["program"]
+        msg, rest_s, what = prog.on_set_done()
+        print(f"Program: {msg}")
+        voice.say(msg)
+        if rest_s > 0:
+            session_cfg["rest_until"] = max(
+                session_cfg["rest_until"], time.time() + rest_s)
+        if what == "done":
+            session_cfg["program"] = None
+            session_cfg["rep_goal"] = None
+            if chat:
+                live_state["program"] = None
+            return
+        b = prog.current
+        if what == "next":
+            session_cfg["switch_to"] = b["exercise"]
+        else:                          # same exercise — fresh set counters
+            if plank is not None:
+                plank = PlankTracker()
+            elif counter is not None:
+                counter = RepCounter(spec)
+            rep_traj = []
+        session_cfg["rep_goal"] = b.get("reps")
+        if chat:
+            live_state["program"] = prog.status()
 
     if coach:
         import coach_chat
@@ -1187,6 +1357,27 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             if 0 < now_t - last_frame_t < 1:
                 fps_live = 0.9 * fps_live + 0.1 / (now_t - last_frame_t)
             last_frame_t = now_t
+
+            newp = session_cfg["program_new"]        # guided program install
+            if newp:
+                session_cfg["program_new"] = None
+                session_cfg["program"] = newp
+                b = newp.current
+                print(f"Program: {newp.overview()}")
+                voice.say(f"Workout program: {newp.overview()}. First up, "
+                          f"{b['exercise'].replace('_', ' ')} — "
+                          f"{WorkoutProgram._target(b)}. Let's go!")
+                session_cfg["switch_to"] = b["exercise"]   # fresh counters
+                session_cfg["rep_goal"] = b.get("reps")
+                if chat:
+                    live_state["program"] = newp.status()
+            if session_cfg["program_stop"]:
+                session_cfg["program_stop"] = False
+                if session_cfg["program"]:
+                    session_cfg["program"] = None
+                    session_cfg["rep_goal"] = None
+                    if chat:
+                        live_state["program"] = None
 
             want = session_cfg["switch_to"]          # coach-driven switch
             if want:
@@ -1250,7 +1441,9 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                             "rest_left_s": int(rest_left),
                             "tempo_ecc_target_s":
                                 session_cfg["tempo_ecc_target"],
-                            "cues_on": session_cfg["cues_on"]}
+                            "cues_on": session_cfg["cues_on"],
+                            "program": session_cfg["program"].describe()
+                            if session_cfg["program"] else None}
 
                 if collect_rows is not None:
                     collect_buf.append((t, frame_features(ang, pts)))
@@ -1286,6 +1479,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     if plank.update(ang["body_line"], t):
                         faults_now.append("body_sag")
                     say_cue(feedback.push(faults_now, t))
+                    prog = session_cfg["program"]
+                    pb = prog.current if prog else None
+                    if (pb and "hold_s" in pb and pb["exercise"] == exercise
+                            and plank.streak >= pb["hold_s"]):
+                        advance_program()
                     hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
                             f"best: {plank.best:5.1f}s")
                     hud2 = f"body line: {ang['body_line']:5.1f}"
@@ -1326,7 +1524,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         else:
                             say_cue(f"{ev.count}. {feedback.praise()}")
                         goal = session_cfg["rep_goal"]
-                        if goal and ev.count == goal:
+                        if (goal and ev.count == goal
+                                and not session_cfg["program"]):
                             voice.say(f"That's {goal} — goal reached! "
                                       "Take your rest.")
                         tempo_tgt = session_cfg["tempo_ecc_target"]
@@ -1356,6 +1555,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                                     log.session["reps"]),
                                 velocity_loss_pct=round(fatigue.loss * 100, 1)
                                 if fatigue.loss else None)
+                        prog = session_cfg["program"]
+                        pb = prog.current if prog else None
+                        if (pb and "reps" in pb and pb["exercise"] == exercise
+                                and ev.count >= pb["reps"]):
+                            advance_program()
                     elif counter.state == "IDLE":
                         rep_traj = []           # discarded blip / idle frames
                     if chat:
@@ -1385,6 +1589,11 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     bars = "|" * min(10, int(chat.mic_level * 3))
                     cv2.putText(frame, f"mic: {st} {bars}", (10, 30 + 28 * 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
+                prog_hud = session_cfg["program"]
+                if prog_hud and prog_hud.current:
+                    cv2.putText(frame, "program: " + prog_hud.describe(),
+                                (10, 30 + 28 * 3), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (255, 200, 80), 2)
                 if feedback.current:
                     cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
@@ -1730,6 +1939,48 @@ def selftest():
     assert apply_chat_action({"do": "set_rep_goal", "reps": "ten"}, cfg) == ""
     print("ok")
 
+    print("21) guided workout programs:", end=" ")
+    p = WorkoutProgram.parse(
+        "Squats 2x5 rest 90, push-ups 2 x 15 rest 45, plank 1x40s rest 30")
+    assert [b["exercise"] for b in p.blocks] == ["squat", "pushup", "plank"]
+    assert p.blocks[0] == {"exercise": "squat", "sets": 2, "rest_s": 90,
+                           "reps": 5}
+    assert p.blocks[2]["hold_s"] == 40          # 's' suffix = timed hold
+    assert WorkoutProgram.parse("plank 2x40").blocks[0]["hold_s"] == 40
+    assert WorkoutProgram.parse("curl 2x12").blocks[0]["rest_s"] == 60
+    assert WorkoutProgram.parse(
+        "bench press 3x8 then pull-ups 2x6").blocks[1]["exercise"] == "pullup"
+    for bad, why in (("", "empty"), ("yoga 3x10", "unknown exercise"),
+                     ("squat 0x10", "sets"), ("squat 3x200", "reps"),
+                     ("squat ten by ten", "can't read")):
+        try:
+            WorkoutProgram.parse(bad)
+            raise AssertionError(f"accepted bad plan: {bad!r}")
+        except ValueError as e:
+            assert why in str(e), (bad, str(e))
+    # advance: squat set 1 -> set 2 -> pushup block -> ... -> done
+    msg, rest, what = p.on_set_done()
+    assert what == "same" and rest == 90 and "set 2" in msg.lower()
+    assert p.describe() == "block 1/3 squat set 2/2 (5 reps)"
+    msg, rest, what = p.on_set_done()
+    assert what == "next" and rest == 90 and "pushup" in msg.replace(" ", "")
+    assert p.current["exercise"] == "pushup" and p.si == 1
+    p.on_set_done(); p.on_set_done()             # pushup sets 1+2
+    assert p.current["exercise"] == "plank"
+    assert p.status()["target"] == "40 second hold"
+    msg, rest, what = p.on_set_done()
+    assert what == "done" and rest == 0 and "complete" in msg
+    assert p.current is None and p.describe() is None
+    ack = apply_chat_action(
+        {"do": "start_program", "plan": "squat 2x5 rest 30"}, cfg)
+    assert "squat 2x5" in ack and isinstance(cfg["program_new"],
+                                             WorkoutProgram)
+    assert "couldn't read" in apply_chat_action(
+        {"do": "start_program", "plan": "dance 9x9"}, cfg)
+    assert "stopped" in apply_chat_action({"do": "stop_program"}, cfg)
+    assert cfg["program_stop"] is True
+    print("ok")
+
     print("\nAll selftests passed.")
 
 
@@ -1771,6 +2022,12 @@ if __name__ == "__main__":
                     help="with --exercise: append labeled feature windows "
                          "from this session; with --train-classifier: also "
                          "train on that file")
+    ap.add_argument("--program", metavar="PLAN",
+                    help="run a guided workout, e.g. \"squat 3x10 rest 90, "
+                         "pushup 2x15 rest 45, plank 2x40s\" — the app "
+                         "counts sets, rests and switches exercises for you "
+                         "(the LLM coach can also start one: 'make me a "
+                         "leg workout')")
     args = ap.parse_args()
     if args.selftest:
         selftest()
@@ -1779,8 +2036,14 @@ if __name__ == "__main__":
     elif args.train_classifier:
         train_classifier(args.model_file, collected=args.collect)
     else:
+        if args.program:
+            try:
+                WorkoutProgram.parse(args.program)
+            except ValueError as e:
+                sys.exit(f"--program: {e}")
         run(args.exercise, args.video, not args.no_voice, args.log_file,
             headless=args.headless, output=args.output, coach=args.coach,
             record_reference=args.record_reference,
             reference_file=args.reference_file, detector_kind=args.detector,
-            model_file=args.model_file, collect=args.collect)
+            model_file=args.model_file, collect=args.collect,
+            program=args.program)

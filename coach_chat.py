@@ -112,13 +112,25 @@ ACTION: {"do": "set_rep_goal", "reps": 10}
 ACTION: {"do": "rest_timer", "seconds": 60}
 ACTION: {"do": "set_tempo", "eccentric_s": 3}
 ACTION: {"do": "cues", "enabled": false}
+ACTION: {"do": "start_program", "plan": "squat 3x10 rest 90, \
+pushup 2x15 rest 45, plank 2x40s rest 30"}
+ACTION: {"do": "stop_program"}
 set_exercise accepts squat, pushup, bench, deadlift, lunge,
 shoulder_press, curl, pullup, plank or "auto" (re-detect). set_rep_goal
 sets the target reps for this set; rest_timer starts a rest countdown;
 set_tempo sets the lowering-phase seconds to enforce; cues mutes/unmutes
-the spoken form corrections. Confirm in one short sentence what you set.
-Never invent other action names; without a clear user request, no ACTION
-lines at all."""
+the spoken form corrections. start_program runs a whole guided workout:
+the app counts every set, starts each rest and switches exercises by
+itself. The plan is comma-separated blocks "exercise SETSxREPS rest
+SECONDS"; use e.g. 40s for timed holds (plank 2x40s). The plan may ONLY
+use these exact exercise names: squat, pushup, bench, deadlift, lunge,
+shoulder_press, curl, pullup, plank — never invent variations (no
+"squat-left-leg", no equipment names). When the athlete asks you to
+plan or program a workout, design it from their profile, history and
+today's shape, say it in one short sentence, then emit ONE
+start_program action with the full plan. Confirm in one short sentence
+what you set. Never invent other action names; without a clear user
+request, no ACTION lines at all."""
 
 CALENDAR_PROMPT = """\
 CALENDAR — the athlete's Google Calendar is connected. You can use it
@@ -905,6 +917,10 @@ class BackgroundChat:
                     ack = self.on_action(a)
                 except Exception as e:
                     ack = f"(action failed: {e})"
+                if ack and ack.startswith(("I couldn't", "I don't know")):
+                    feedback.append(
+                        f"APP ERROR: {ack} Fix the problem and send a "
+                        "corrected ACTION line.")
             if ack:
                 print(f"\n⚙️  {ack}")
                 self.speak(ack)

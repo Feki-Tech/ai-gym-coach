@@ -23,6 +23,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **The coach remembers you** — a local athlete profile (SQLite, never uploaded) auto-learns your goals, injuries, equipment and preferences from conversation and personalises future coaching; `/profile` `/remember` `/forget` to inspect or edit — see [docs/COACH.md](docs/COACH.md)
 - **The coach drives the app** — ask it to switch exercise, set a rep goal, start a rest timer, enforce tempo or mute cues, and it happens live; it also sees your joint angles and environment (lighting, framing, visibility) for smarter advice — see [docs/COACH.md](docs/COACH.md)
 - **Google Calendar** — connect once and the coach checks your week and books training sessions with you ("when can I train?" → "Tuesday 18:00 is free — book it?"); only calendar-events access, tokens stay local — see [docs/COACH.md §5](docs/COACH.md)
+- **Guided workout programs** — `--program "squat 3x10 rest 90, pushup 2x15 rest 45, plank 2x40s"` (or just tell the coach *"plan me a leg workout and start it"*): the app counts sets, runs the rest countdowns, switches exercises and announces every step
 
 ## Quick start
 
@@ -143,6 +144,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] Conversational LLM coach — talk to it by text/mic during workouts (Ollama in Docker), see [docs/COACH.md](docs/COACH.md)
 - [x] DTW comparison against expert reference reps (`--record-reference`)
 - [x] ML exercise auto-classification — numpy MLP on windowed skeleton features (`--train-classifier`, `--collect`)
+- [x] Guided workout programs — the app (or the LLM coach) runs whole sessions: sets, rests, exercise switches (`--program`)
 - [ ] Android app (MediaPipe Tasks, Kotlin)
 
 ## Disclaimer
