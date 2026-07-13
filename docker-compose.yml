@@ -112,5 +112,17 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./data:/data
 
+  # Progress dashboard — charts of your workout history in the browser.
+  # Works on every OS. http://localhost:7788 after `docker compose up dashboard`.
+  dashboard:
+    build: .
+    image: ai-gym-coach
+    entrypoint: ["python", "coach_dashboard.py"]
+    command: ["--host", "0.0.0.0", "--log", "/data/workout_log.json", "--no-browser"]
+    ports:
+      - "7788:7788"
+    volumes:
+      - ./data:/data
+
 volumes:
   ollama-models:

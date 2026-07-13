@@ -956,6 +956,7 @@ def print_summary(s: dict):
         else:
             print("Faults: none — great set!")
     print(f"Logged to workout log.")
+    print("Web dashboard with charts: python coach_dashboard.py")
 
 
 # ---------------------------------------------------------- stats dashboard

@@ -19,6 +19,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
+- **Web progress dashboard** — `python coach_dashboard.py` opens a local page with charts: weekly volume, form-score and rep trends per exercise, PRs, fault breakdowns, streaks (offline, no dependencies)
 - **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally — see [docs/COACH.md](docs/COACH.md)
 - **The coach remembers you** — a local athlete profile (SQLite, never uploaded) auto-learns your goals, injuries, equipment and preferences from conversation and personalises future coaching; `/profile` `/remember` `/forget` to inspect or edit — see [docs/COACH.md](docs/COACH.md)
 - **The coach drives the app** — ask it to switch exercise, set a rep goal, start a rest timer, enforce tempo or mute cues, and it happens live; it also sees your joint angles and environment (lighting, framing, visibility) for smarter advice — see [docs/COACH.md](docs/COACH.md)
@@ -38,6 +39,7 @@ python pose_coach.py --exercise squat --record-reference   # save your best rep 
 python pose_coach.py --exercise squat            # future reps get a ref-sim 0-100 score
 python pose_coach.py --train-classifier          # train the ML detector (~2 s, then auto uses it)
 python pose_coach.py --stats                     # progress dashboard from the log
+python coach_dashboard.py                        # same, as a web page with charts
 python pose_coach.py --selftest                  # verify install, no camera needed
 ```
 
@@ -91,6 +93,7 @@ Or with compose:
 docker compose run --rm selftest
 VIDEO=squats.mp4 EXERCISE=squat docker compose run --rm analyze
 EXERCISE=squat docker compose run --rm webcam     # Linux host only
+docker compose up dashboard                       # progress charts on :7788
 ```
 
 Prebuilt image (published by CI from `main`):
@@ -139,6 +142,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] Rule-based exercise auto-detection (`--exercise auto`)
 - [x] Fatigue estimation from velocity loss
 - [x] Progress dashboard (`--stats`)
+- [x] Web progress dashboard with charts (`coach_dashboard.py`)
 - [x] iOS app (SwiftUI + Apple Vision) — see [docs/IOS.md](docs/IOS.md)
 - [x] iOS localization: en · zh-Hans · hi · es · fr · ar (UI + voice coaching)
 - [x] Conversational LLM coach — talk to it by text/mic during workouts (Ollama in Docker), see [docs/COACH.md](docs/COACH.md)
