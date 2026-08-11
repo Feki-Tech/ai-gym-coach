@@ -15,8 +15,11 @@ coach_profile.db
 google_credentials.json
 google_token.json
 
-# trained classifier weights + collected training data
+# trained classifier weights, manifests, un-promoted candidates + collected
+# training data (docs/INFRA.md §4)
 classifier.npz
+classifier.candidate.npz
+*.manifest.json
 *.windows.jsonl
 
 .idea/

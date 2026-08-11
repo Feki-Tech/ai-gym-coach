@@ -20,11 +20,13 @@ Exercises: squat, pushup, bench, deadlift, lunge, shoulder_press, curl,
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -375,6 +377,48 @@ FEAT_KEYS = ("trunk", "knee", "elbow", "hip", "sho_y", "wri_y",
 NDIM = 4 * len(FEAT_KEYS) + 2
 MODEL_FILE = "classifier.npz"
 
+# Model lifecycle (docs/INFRA.md §4). The eval harness always generates from
+# EVAL_SEED — never the training seed — so its windows are held out from every
+# training run; every 5th collected real window is reserved for it too.
+MANIFEST_SCHEMA = 1
+EVAL_SEED = 20260814
+GATE_ABS_OVERALL = 0.90   # absolute bar: harness accuracy a candidate must clear
+GATE_ABS_CLASS = 0.70     # ... and per class (eval sets are small; keep it loose)
+GATE_TOL_OVERALL = 0.02   # no-regression vs champion, overall
+GATE_TOL_CLASS = 0.10     # ... and per class
+
+
+def _git_short() -> str:
+    """Short commit hash for the model version; 'nogit' outside a checkout."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "nogit"
+    except Exception:
+        return "nogit"
+
+
+def _read_collected(path: str | None) -> list[tuple[str, list[float]]]:
+    """Labeled real windows from a --collect JSONL file (bad lines skipped)."""
+    rows: list[tuple[str, list[float]]] = []
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("label") in ML_CLASSES and len(row.get("x", [])) == NDIM:
+                    rows.append((row["label"], row["x"]))
+    return rows
+
+
+def _split_collected(rows: list) -> tuple[list, list]:
+    """(train, eval) — every 5th row is reserved for the harness, by position,
+    so the same file always splits the same way and eval rows never train."""
+    return ([r for i, r in enumerate(rows) if i % 5 != 0],
+            [r for i, r in enumerate(rows) if i % 5 == 0])
+
 
 def window_features(frames: list[dict]) -> np.ndarray:
     """Fixed-size vector from a window of frame_features dicts: per-channel
@@ -468,6 +512,7 @@ class TinyMLP:
                              (n_hidden, len(self.classes)))
         self.b2 = np.zeros(len(self.classes))
         self.mu, self.sd = np.zeros(n_in), np.ones(n_in)
+        self.manifest: dict = {"model_version": "unknown"}
 
     def _forward(self, Xn):
         h = np.maximum(0.0, Xn @ self.W1 + self.b1)
@@ -499,9 +544,21 @@ class TinyMLP:
                 prm += v
         return self
 
-    def save(self, path: str):
-        np.savez(path, W1=self.W1, b1=self.b1, W2=self.W2, b2=self.b2,
-                 mu=self.mu, sd=self.sd, classes=np.array(self.classes))
+    def save(self, path: str, manifest: dict | None = None):
+        """Weights + (optionally) a manifest, embedded AND as a .json sidecar
+        so `cat classifier.manifest.json` answers "what is this model" without
+        numpy. Legacy bare .npz files (no manifest) keep loading."""
+        arrays = dict(W1=self.W1, b1=self.b1, W2=self.W2, b2=self.b2,
+                      mu=self.mu, sd=self.sd, classes=np.array(self.classes))
+        if manifest is not None:
+            arrays["manifest"] = np.array(json.dumps(manifest))
+        np.savez(path, **arrays)
+        if manifest is not None:
+            side = manifest_path(path)
+            tmp = side + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2)
+            os.replace(tmp, side)
 
     @classmethod
     def load(cls, path: str) -> "TinyMLP":
@@ -510,56 +567,164 @@ class TinyMLP:
                 [str(c) for c in d["classes"]])
         m.W1, m.b1, m.W2, m.b2 = d["W1"], d["b1"], d["W2"], d["b2"]
         m.mu, m.sd = d["mu"], d["sd"]
+        m.manifest = (json.loads(str(d["manifest"])) if "manifest" in d
+                      else {"model_version": "unknown"})
         return m
+
+
+def manifest_path(model_path: str) -> str:
+    """classifier.npz -> classifier.manifest.json (next to the weights)."""
+    return os.path.splitext(model_path)[0] + ".manifest.json"
+
+
+def candidate_path(model_path: str) -> str:
+    """classifier.npz -> classifier.candidate.npz (the un-promoted challenger)."""
+    root, ext = os.path.splitext(model_path)
+    return f"{root}.candidate{ext}"
 
 
 def build_dataset(samples_per_class: int = 120, seed: int = 0,
                   collected: str | None = None):
-    """Synthetic windows for every class + optional real labeled windows
-    appended by --collect (JSONL rows {"label": ..., "x": [...]})"""
+    """Synthetic windows for every class + the TRAINING share of any real
+    labeled windows recorded by --collect (JSONL rows {"label":..., "x":[...]}).
+    Every 5th collected row is reserved for the eval harness and never trains
+    (_split_collected), so harness numbers stay honest on real data too."""
     rng = np.random.default_rng(seed)
     X, y = [], []
     for ci, ex in enumerate(ML_CLASSES):
         for _ in range(samples_per_class):
             X.append(window_features(synth_frames(ex, rng)))
             y.append(ci)
-    n_real = 0
-    if collected and os.path.exists(collected):
-        with open(collected, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("label") in ML_CLASSES and len(row.get("x", [])) == NDIM:
-                    X.append(np.asarray(row["x"], dtype=float))
-                    y.append(ML_CLASSES.index(row["label"]))
-                    n_real += 1
-    return np.array(X), np.array(y), n_real
+    train_rows, _ = _split_collected(_read_collected(collected))
+    for label, x in train_rows:
+        X.append(np.asarray(x, dtype=float))
+        y.append(ML_CLASSES.index(label))
+    return np.array(X), np.array(y), len(train_rows)
+
+
+def evaluate_classifier(model: "TinyMLP", collected: str | None = None,
+                        samples_per_class: int = 60) -> dict:
+    """Fixed held-out harness: synthetic windows from EVAL_SEED (never a
+    training seed) + the reserved slice of collected real windows. The old
+    printed "validation accuracy" was a random split of the same generation
+    that trained the model — it could not catch regression; this can."""
+    rng = np.random.default_rng(EVAL_SEED)
+    X, y = [], []
+    for ci, ex in enumerate(ML_CLASSES):
+        for _ in range(samples_per_class):
+            X.append(window_features(synth_frames(ex, rng)))
+            y.append(ci)
+    _, eval_rows = _split_collected(_read_collected(collected))
+    for label, x in eval_rows:
+        X.append(np.asarray(x, dtype=float))
+        y.append(ML_CLASSES.index(label))
+    X, y = np.array(X), np.array(y)
+
+    pred = model.predict_proba(X).argmax(1)
+    per_class = {}
+    for ci, ex in enumerate(ML_CLASSES):
+        m = y == ci
+        if m.any():
+            per_class[ex] = float((pred[m] == ci).mean())
+    return {"overall": float((pred == y).mean()), "per_class": per_class,
+            "n_windows": int(len(X)), "n_real": len(eval_rows)}
 
 
 def train_classifier(model_path: str = MODEL_FILE,
                      collected: str | None = None,
                      samples_per_class: int = 120, epochs: int = 300,
                      seed: int = 0) -> float:
-    """Train the exercise classifier and save weights; returns val accuracy."""
+    """Train the classifier, evaluate it on the fixed harness, and save the
+    weights WITH a manifest recording exactly what produced them. Returns the
+    harness accuracy. No gating here — promote_classifier is the gate."""
     X, y, n_real = build_dataset(samples_per_class, seed, collected)
     idx = np.random.default_rng(seed).permutation(len(X))
-    X, y = X[idx], y[idx]
-    n_val = max(1, len(X) // 5)
-    model = TinyMLP(seed=seed).fit(X[n_val:], y[n_val:], epochs=epochs)
-    pred = model.predict_proba(X[:n_val]).argmax(1)
-    acc = float((pred == y[:n_val]).mean())
-    print(f"Trained on {len(X) - n_val} windows ({samples_per_class}/class "
-          f"synthetic + {n_real} collected), validation accuracy {acc:.1%}")
-    for ci, ex in enumerate(ML_CLASSES):
-        m = y[:n_val] == ci
-        if m.any():
-            print(f"  {ex:15s} {float((pred[m] == ci).mean()):6.1%} "
-                  f"({int(m.sum())} val windows)")
-    model.save(model_path)
-    print(f"Model saved -> {model_path}")
-    return acc
+    model = TinyMLP(seed=seed).fit(X[idx], y[idx], epochs=epochs)
+
+    report = evaluate_classifier(model, collected)
+    train_hash = hashlib.sha256(
+        np.ascontiguousarray(X).tobytes()).hexdigest()[:16]
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA,
+        "model_version": time.strftime("%Y%m%d.%H%M%S", time.gmtime())
+                         + "+" + _git_short(),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "seed": seed, "epochs": epochs,
+        "samples_per_class": samples_per_class,
+        "n_collected_train": n_real,
+        "training_data_sha256": train_hash,
+        "classes": list(ML_CLASSES),
+        "eval": report,
+    }
+    model.manifest = manifest
+    model.save(model_path, manifest)
+
+    print(f"Trained on {len(X)} windows ({samples_per_class}/class synthetic "
+          f"+ {n_real} collected), harness accuracy {report['overall']:.1%} "
+          f"({report['n_windows']} held-out windows, seed {EVAL_SEED})")
+    for ex, acc in report["per_class"].items():
+        print(f"  {ex:15s} {acc:6.1%}")
+    print(f"Model saved -> {model_path} (version {manifest['model_version']})")
+    return report["overall"]
+
+
+def promote_classifier(model_path: str = MODEL_FILE,
+                       collected: str | None = None,
+                       samples_per_class: int = 120, epochs: int = 300,
+                       seed: int = 0) -> int:
+    """Champion/challenger gate (docs/INFRA.md §4, same contract as
+    edgesense's ml/promote.py): train a challenger to the candidate path,
+    evaluate champion and challenger on the same fixed harness, and replace
+    the champion only if the challenger clears the absolute bar and does not
+    regress. Exit codes: 0 promoted · 1 refused · 2 error."""
+    cand = candidate_path(model_path)
+    try:
+        print(f"Training challenger -> {cand}")
+        train_classifier(cand, collected, samples_per_class, epochs, seed)
+        challenger = TinyMLP.load(cand)
+        ch_eval = challenger.manifest["eval"]
+
+        champion = None
+        if os.path.exists(model_path):
+            champion = TinyMLP.load(model_path)
+            champ_eval = evaluate_classifier(champion, collected)
+            print(f"Champion: {champion.manifest.get('model_version')} "
+                  f"(harness {champ_eval['overall']:.1%})")
+
+        failures = []
+        if ch_eval["overall"] < GATE_ABS_OVERALL:
+            failures.append(f"overall {ch_eval['overall']:.1%} "
+                            f"< bar {GATE_ABS_OVERALL:.0%}")
+        for ex, acc in ch_eval["per_class"].items():
+            if acc < GATE_ABS_CLASS:
+                failures.append(f"{ex} {acc:.1%} < bar {GATE_ABS_CLASS:.0%}")
+        if champion is not None:
+            if ch_eval["overall"] < champ_eval["overall"] - GATE_TOL_OVERALL:
+                failures.append(
+                    f"overall regressed {champ_eval['overall']:.1%} -> "
+                    f"{ch_eval['overall']:.1%} (tol {GATE_TOL_OVERALL:.0%})")
+            for ex, acc in champ_eval["per_class"].items():
+                got = ch_eval["per_class"].get(ex, 0.0)
+                if got < acc - GATE_TOL_CLASS:
+                    failures.append(f"{ex} regressed {acc:.1%} -> {got:.1%} "
+                                    f"(tol {GATE_TOL_CLASS:.0%})")
+
+        if failures:
+            print("REFUSED — champion unchanged, candidate kept for inspection:")
+            for f in failures:
+                print(f"  - {f}")
+            return 1
+
+        os.replace(cand, model_path)
+        cand_side = manifest_path(cand)
+        if os.path.exists(cand_side):
+            os.replace(cand_side, manifest_path(model_path))
+        print(f"PROMOTED -> {model_path} "
+              f"(version {challenger.manifest['model_version']})")
+        return 0
+    except Exception as exc:  # the gate must never half-replace a model
+        print(f"gate error: {exc}", file=sys.stderr)
+        return 2
 
 
 class MLDetector(AutoDetector):
@@ -1982,6 +2147,53 @@ def selftest():
     assert cfg["program_stop"] is True
     print("ok")
 
+    print("22) classifier manifest:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        mp_ = os.path.join(td, "clf.npz")
+        with redirect_stdout(io.StringIO()):
+            train_classifier(mp_, samples_per_class=40, epochs=200)
+        m = TinyMLP.load(mp_)
+        man = m.manifest
+        assert man["schema_version"] == MANIFEST_SCHEMA
+        assert re.fullmatch(r"\d{8}\.\d{6}\+\S+", man["model_version"])
+        assert man["classes"] == list(ML_CLASSES)
+        assert 0.0 <= man["eval"]["overall"] <= 1.0 and man["eval"]["per_class"]
+        assert os.path.exists(manifest_path(mp_))     # readable sidecar
+        with open(manifest_path(mp_), encoding="utf-8") as fh:
+            assert json.load(fh)["model_version"] == man["model_version"]
+        # legacy bare .npz (pre-manifest) still loads
+        legacy = os.path.join(td, "legacy.npz")
+        np.savez(legacy, W1=m.W1, b1=m.b1, W2=m.W2, b2=m.b2,
+                 mu=m.mu, sd=m.sd, classes=np.array(m.classes))
+        assert TinyMLP.load(legacy).manifest["model_version"] == "unknown"
+    print("OK (embedded + sidecar, legacy load)")
+
+    print("23) promotion gate:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        mp_ = os.path.join(td, "clf.npz")
+        # no champion yet: first train promotes (absolute bar only)
+        with redirect_stdout(io.StringIO()):
+            rc = promote_classifier(mp_, samples_per_class=40, epochs=200)
+        assert rc == 0 and os.path.exists(mp_)
+        champ_version = TinyMLP.load(mp_).manifest["model_version"]
+        # sabotage the champion so any honest challenger beats it, then check
+        # a good challenger passes the no-regression comparison and promotes
+        with redirect_stdout(io.StringIO()):
+            rc = promote_classifier(mp_, samples_per_class=40, epochs=200,
+                                    seed=1)
+        assert rc == 0
+        assert TinyMLP.load(mp_).manifest["model_version"] != champ_version
+        # an untrained challenger must be REFUSED and the champion kept:
+        # simulate by gating with a broken training config (0 epochs)
+        before = TinyMLP.load(mp_).manifest["model_version"]
+        with redirect_stdout(io.StringIO()):
+            rc = promote_classifier(mp_, samples_per_class=40, epochs=0,
+                                    seed=2)
+        assert rc == 1, "gate accepted an untrained challenger"
+        assert TinyMLP.load(mp_).manifest["model_version"] == before
+        assert os.path.exists(candidate_path(mp_))    # kept for inspection
+    print("OK (bootstrap, promote, refusal keeps champion)")
+
     print("\nAll selftests passed.")
 
 
@@ -2010,9 +2222,16 @@ if __name__ == "__main__":
     ap.add_argument("--reference-file", default=REFERENCE_FILE,
                     help=f"reference reps file (default {REFERENCE_FILE})")
     ap.add_argument("--train-classifier", action="store_true",
-                    help="train the ML exercise classifier on synthetic "
-                         "motion data (+ any --collect recordings), save "
-                         "weights, and report validation accuracy")
+                    help="train a challenger classifier on synthetic motion "
+                         "data (+ any --collect recordings) and promote it "
+                         "through the champion/challenger gate — an existing "
+                         "model is only replaced if the challenger clears the "
+                         "quality bar and does not regress (exit 0 promoted, "
+                         "1 refused, 2 error)")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="with --train-classifier: skip the promotion gate "
+                         "and overwrite the model unconditionally (old "
+                         "behaviour; the manifest is still written)")
     ap.add_argument("--detector", choices=("auto", "rules", "ml"),
                     default="auto",
                     help="auto-detect backend: ml = trained classifier, "
@@ -2035,7 +2254,11 @@ if __name__ == "__main__":
     elif args.stats:
         print_stats(args.log_file)
     elif args.train_classifier:
-        train_classifier(args.model_file, collected=args.collect)
+        if args.no_gate:
+            train_classifier(args.model_file, collected=args.collect)
+        else:
+            sys.exit(promote_classifier(args.model_file,
+                                        collected=args.collect))
     else:
         if args.program:
             try:
