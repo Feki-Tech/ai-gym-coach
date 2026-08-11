@@ -402,6 +402,58 @@ def serve(log_path: str, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
         srv.server_close()
 
 
+# -------------------------------------------------------------- demo data
+def demo_history(weeks: int = 8, seed: int = 42) -> list[dict]:
+    """Plausible synthetic training history for --demo: several weeks of
+    sessions with improving scores, thinning fault counts and a weekly plank.
+    Powers the hosted demo dashboard, which must never show real user data
+    (docs/INFRA.md §2) — and lets anyone preview the page before training."""
+    import random
+
+    rng = random.Random(seed)
+    plan = (("squat", ("shallow", "knees_in")), ("pushup", ("elbow_flare",)),
+            ("curl", ("swing",)), ("deadlift", ("back_round",)),
+            ("shoulder_press", ("uneven",)))
+    today = dt.date.today()
+    history: list[dict] = []
+    for day_back in range(weeks * 7, -1, -1):
+        date = today - dt.timedelta(days=day_back)
+        if rng.random() > 0.55:                      # ~4 training days a week
+            continue
+        progress = 1 - day_back / (weeks * 7)        # 0 -> 1 over the period
+        for ex, faults in rng.sample(plan, k=rng.randint(1, 2)):
+            base = 62 + 28 * progress                # scores drift 62 -> 90
+            scores = [min(100, round(base + rng.gauss(0, 6)))
+                      for _ in range(rng.randint(6, 12))]
+            fc = {f: rng.randint(1, 3) for f in faults
+                  if rng.random() < 0.5 * (1 - progress) + 0.1}
+            reps = [{"n": i + 1, "score": sc, "eccentric_s": round(rng.uniform(1.0, 2.2), 2),
+                     "concentric_s": round(rng.uniform(0.8, 1.6), 2),
+                     "min_angle": round(rng.uniform(70, 95), 1),
+                     "velocity": round(rng.uniform(24, 40), 1),
+                     "similarity": None, "faults": []}
+                    for i, sc in enumerate(scores)]
+            history.append({
+                "started": f"{date.isoformat()} {rng.randint(7, 20):02d}:30:00",
+                "exercise": ex, "reps": reps, "plank": None,
+                "duration_s": round(rng.uniform(240, 900), 1),
+                "summary": {"reps": len(reps),
+                            "avg_score": round(sum(scores) / len(scores), 1),
+                            "avg_concentric_s": 1.2, "avg_similarity": None,
+                            "fault_counts": fc, "velocity_loss_pct": None}})
+        if date.isoweekday() == 6:                   # Saturday plank habit
+            hold = round(30 + 60 * progress + rng.uniform(-5, 5), 1)
+            history.append({
+                "started": f"{date.isoformat()} 10:00:00", "exercise": "plank",
+                "reps": [], "plank": {"total_hold_s": hold,
+                                      "best_streak_s": round(hold * 0.7, 1)},
+                "duration_s": hold + 30,
+                "summary": {"reps": 0, "avg_score": None,
+                            "avg_concentric_s": None, "avg_similarity": None,
+                            "fault_counts": {}, "velocity_loss_pct": None}})
+    return history
+
+
 # --------------------------------------------------------------- selftest
 def _fake_history() -> list[dict]:
     def sess(day, ex, scores, faults=None, plank=None):
@@ -493,6 +545,19 @@ def selftest() -> None:
             srv.shutdown()
             srv.server_close()
     print("ok 4 — HTTP server (page, /data.json, 404)")
+
+    # 5 — demo history: valid schema, aggregates cleanly, shows progress
+    demo = demo_history(weeks=8, seed=42)
+    assert len(demo) > 20, f"only {len(demo)} demo sessions"
+    agg5 = aggregate(demo)
+    assert agg5["totals"]["reps"] > 100
+    assert "plank" in agg5["exercises"] and len(agg5["weekly"]) >= 6
+    sq5 = agg5["exercises"]["squat"]["scores"]
+    first, last = sq5[0]["value"], sq5[-1]["value"]
+    assert last > first, f"demo scores should trend up ({first} -> {last})"
+    assert render_html(agg5, "demo")                    # renders
+    assert demo_history(weeks=8, seed=42) == demo       # deterministic
+    print("ok 5 — demo history (schema, trends, deterministic)")
     print("All dashboard selftests passed.")
 
 
@@ -508,12 +573,22 @@ def main() -> None:
                     help="write a static HTML report and exit")
     ap.add_argument("--no-browser", action="store_true",
                     help="don't open the browser automatically")
+    ap.add_argument("--demo", action="store_true",
+                    help="serve synthetic demo history instead of a real log "
+                         "(what the hosted demo runs — real data never leaves "
+                         "your machine)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
     if args.selftest:
         selftest()
         return
+    if args.demo:
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "demo_workout_log.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(demo_history(), fh)
+        args.log = path
     if args.export:
         page = render_html(aggregate(load_history(args.log)), args.log,
                            refresh=False)
