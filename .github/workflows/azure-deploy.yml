@@ -1,0 +1,94 @@
+name: Deploy demo dashboard to Azure
+
+# CD for the hosted demo dashboard (docs/INFRA.md §5): build the image on the
+# runner, push to ACR, roll the container app. Auth is OIDC — no stored
+# secrets. Deploy is gated on the selftests (the discipline ci.yml already
+# has; edgesense's deploy pipeline lacked it and the INFRA doc says keep it).
+#
+# Does nothing until the one-time setup in azure/README.md is done and these
+# repository VARIABLES exist: AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# AZURE_SUBSCRIPTION_ID, ACR_NAME, RESOURCE_GROUP.
+#
+# Images are built on the runner, NOT with `az acr build`: ACR Tasks is
+# disabled on this subscription (TasksOperationsNotAllowed).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["ios/**", "docs/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC
+  contents: read
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  selftest:
+    # Deploy must never outrun the tests, even though ci.yml runs them too.
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.30"
+          enable-cache: true
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libgles2 libegl1 libglib2.0-0 espeak-ng
+      - run: uv sync --frozen --python 3.12
+      - run: uv run python pose_coach.py --selftest
+      - run: uv run python coach_dashboard.py --selftest
+
+  deploy:
+    needs: selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build & push image to ACR
+        run: |
+          server="${{ vars.ACR_NAME }}.azurecr.io"
+          az acr login --name "${{ vars.ACR_NAME }}"
+          docker build -t "$server/ai-gym-coach:$IMAGE_TAG" \
+                       -t "$server/ai-gym-coach:latest" .
+          docker push --all-tags "$server/ai-gym-coach"
+
+      - name: Roll the dashboard to the new tag
+        run: |
+          # Bootstrap: before the first terraform apply the app doesn't exist
+          # yet — skip instead of failing; Terraform creates it from :latest.
+          if ! az containerapp show -n gymcoach-dashboard \
+               -g "${{ vars.RESOURCE_GROUP }}" -o none 2>/dev/null; then
+            echo "gymcoach-dashboard does not exist yet (bootstrap run), skipping"
+            exit 0
+          fi
+          az containerapp update \
+            --name gymcoach-dashboard \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --image "${{ vars.ACR_NAME }}.azurecr.io/ai-gym-coach:$IMAGE_TAG"
+
+      - name: Smoke check
+        run: |
+          if ! az containerapp show -n gymcoach-dashboard \
+               -g "${{ vars.RESOURCE_GROUP }}" -o none 2>/dev/null; then
+            exit 0
+          fi
+          url=$(az containerapp show -n gymcoach-dashboard \
+            -g "${{ vars.RESOURCE_GROUP }}" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Dashboard: https://$url"
+          curl -fsS --retry 5 --retry-delay 10 "https://$url/" | grep -qi "streak" \
+            || echo "not serving yet (may still be warming from scale-to-zero)"
