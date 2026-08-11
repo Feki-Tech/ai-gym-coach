@@ -1,3 +1,7 @@
+# Source of truth for dependencies is pyproject.toml + uv.lock — CI and the
+# Docker image install pinned versions from the lock via uv (docs/INFRA.md §3).
+# This loose list is the pip fallback the docs quote (`pip install -r
+# requirements.txt`); keep it in sync with pyproject's [project.dependencies].
 mediapipe>=0.10
 opencv-python>=4.9
 numpy>=1.26

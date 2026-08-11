@@ -8,9 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libgles2 libegl1 libglib2.0-0 libsm6 libxext6 espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
+# uv: reproducible installs pinned from the committed lock (docs/INFRA.md §3).
+COPY --from=ghcr.io/astral-sh/uv:0.11.30 /uv /uvx /bin/
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-emit-project --no-hashes -o /tmp/req.txt \
+ && uv pip install --system --no-cache -r /tmp/req.txt
 
 COPY pose_coach.py coach_chat.py coach_profile.py coach_calendar.py coach_dashboard.py ./
 # bake the pose model into the image so containers run offline
