@@ -1,0 +1,45 @@
+name: model-gate
+
+# Champion/challenger gate for the exercise classifier (docs/INFRA.md §4).
+# Trains a challenger on CPU, runs the fixed eval harness, and uploads the
+# candidate weights + manifest as artifacts — models are never auto-committed.
+#
+# The shipped classifier.npz lives on each user's machine (gitignored), so in
+# CI there is no champion to compare against: this run proves the training
+# path and the absolute quality bar. The champion comparison happens where
+# the champion lives — locally, via `python pose_coach.py --train-classifier`.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libgles2 libegl1 libglib2.0-0 espeak-ng
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Train challenger and run the gate
+        run: python pose_coach.py --train-classifier --model-file classifier.npz
+      - name: Upload candidate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: classifier-candidate
+          path: |
+            classifier.npz
+            classifier.candidate.npz
+            classifier.manifest.json
+          if-no-files-found: ignore

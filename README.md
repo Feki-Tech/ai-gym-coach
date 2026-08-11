@@ -15,7 +15,7 @@ your form, and coaches you with on-screen + voice feedback.
 - **Smoothing** — One Euro filter per keypoint with visibility gating
 - **Voice coaching** — prioritized, rate-limited cues via TTS ("Straighten your back", "Slow down", "Great form!")
 - **Auto exercise detection** — `--exercise auto` recognizes the movement from the skeleton (8 of 9 exercises; bench press needs manual selection)
-- **ML exercise classifier** — `--train-classifier` trains a small neural network (numpy MLP on windowed skeleton features, no extra deps) that replaces the rule-based detector; bootstrapped from synthetic motion data, improvable with your own recordings via `--collect`
+- **ML exercise classifier** — `--train-classifier` trains a small neural network (numpy MLP on windowed skeleton features, no extra deps) that replaces the rule-based detector; bootstrapped from synthetic motion data, improvable with your own recordings via `--collect`. Every model ships with a version manifest, and retrains pass a **champion/challenger gate** on a fixed eval harness — a worse model never silently replaces the one you have (`--no-gate` opts out)
 - **Fatigue monitor** — warns once when concentric rep velocity drops >20% vs your first reps
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
