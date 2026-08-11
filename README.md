@@ -29,7 +29,8 @@ your form, and coaches you with on-screen + voice feedback.
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt        # or, reproducible from the lockfile:
+                                       #   uv sync   (https://docs.astral.sh/uv/)
 
 python pose_coach.py --exercise squat            # webcam + voice
 python pose_coach.py --exercise auto             # detect the exercise for me

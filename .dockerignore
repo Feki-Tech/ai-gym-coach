@@ -1,6 +1,8 @@
 .git
 .github
 .gitignore
+.venv
+venv
 docs
 data
 README.md
