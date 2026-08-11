@@ -644,11 +644,15 @@ def train_classifier(model_path: str = MODEL_FILE,
     report = evaluate_classifier(model, collected)
     train_hash = hashlib.sha256(
         np.ascontiguousarray(X).tobytes()).hexdigest()[:16]
+    # Millisecond precision: this model trains in <1 s, so a whole-second
+    # version (edgesense's format) collides when train runs back-to-back —
+    # CI's fast runners promoted two identically-versioned models.
+    now = time.time()
     manifest = {
         "schema_version": MANIFEST_SCHEMA,
-        "model_version": time.strftime("%Y%m%d.%H%M%S", time.gmtime())
-                         + "+" + _git_short(),
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "model_version": (time.strftime("%Y%m%d.%H%M%S", time.gmtime(now))
+                          + f".{int(now * 1000) % 1000:03d}+" + _git_short()),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "seed": seed, "epochs": epochs,
         "samples_per_class": samples_per_class,
         "n_collected_train": n_real,
@@ -2155,7 +2159,7 @@ def selftest():
         m = TinyMLP.load(mp_)
         man = m.manifest
         assert man["schema_version"] == MANIFEST_SCHEMA
-        assert re.fullmatch(r"\d{8}\.\d{6}\+\S+", man["model_version"])
+        assert re.fullmatch(r"\d{8}\.\d{6}\.\d{3}\+\S+", man["model_version"])
         assert man["classes"] == list(ML_CLASSES)
         assert 0.0 <= man["eval"]["overall"] <= 1.0 and man["eval"]["per_class"]
         assert os.path.exists(manifest_path(mp_))     # readable sidecar
