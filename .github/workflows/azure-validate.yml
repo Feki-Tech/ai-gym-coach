@@ -1,0 +1,42 @@
+name: Validate Azure scaffold
+
+# The scaffold merged before it was ever run (Terraform isn't installed on the
+# dev machine), so validation lives here permanently: every change to azure/**
+# gets fmt + init + validate on a runner. No Azure auth needed — init runs
+# with -backend=false, so this works on forks and PRs too.
+
+on:
+  push:
+    branches: [main]
+    paths: ["azure/**", ".github/workflows/azure-validate.yml"]
+  pull_request:
+    paths: ["azure/**", ".github/workflows/azure-validate.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: azure/infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: shell scripts parse
+        working-directory: azure/scripts
+        run: for f in *.sh; do bash -n "$f"; done
