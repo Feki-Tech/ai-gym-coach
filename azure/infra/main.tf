@@ -5,25 +5,24 @@
 # this deployment (INFRA.md §2). Scale-to-zero keeps idle compute at €0; the
 # standing cost is ACR Basic (~€4/mo) + Log Analytics cents.
 #
-# First apply is two-step (images must exist before the app can pull):
-#   terraform apply -target=azurerm_container_registry.this \
-#                   -target=azurerm_container_app_environment.this \
-#                   -target=azurerm_user_assigned_identity.apps \
-#                   -target=azurerm_role_assignment.acr_pull
-#   ../scripts/build-and-push.sh <acr-name> latest ..
-#   terraform apply
-# Tear down between demo periods: terraform destroy  (the default posture).
+# Plan/apply normally runs in CI (azure-terraform.yml, OIDC) — the workflow
+# handles the two-phase bootstrap (registry first, then image, then the app).
+# Tear down between demo periods: dispatch the workflow with action=destroy
+# (the default posture).
+#
+# The resource group is NOT managed here: setup-azure-cd.sh creates it, and
+# the CD principal's Contributor role is scoped to it. If Terraform owned the
+# RG, `terraform destroy` would delete the very scope that role assignment
+# lives on and CD would break until someone re-ran the one-time setup.
 
-resource "azurerm_resource_group" "this" {
-  name     = "${var.prefix}-rg"
-  location = var.location
-  tags     = var.tags
+data "azurerm_resource_group" "this" {
+  name = "${var.prefix}-rg"
 }
 
 resource "azurerm_log_analytics_workspace" "this" {
   name                = "${var.prefix}-logs"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
   sku                 = "PerGB2018"
   retention_in_days   = 30
   tags                = var.tags
@@ -31,17 +30,17 @@ resource "azurerm_log_analytics_workspace" "this" {
 
 resource "azurerm_container_app_environment" "this" {
   name                       = "${var.prefix}-env"
-  resource_group_name        = azurerm_resource_group.this.name
-  location                   = azurerm_resource_group.this.location
+  resource_group_name        = data.azurerm_resource_group.this.name
+  location                   = data.azurerm_resource_group.this.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
   tags                       = var.tags
 }
 
 # Registry name must be globally unique and alphanumeric-only.
 resource "azurerm_container_registry" "this" {
-  name                = "${var.prefix}acr${substr(md5(azurerm_resource_group.this.id), 0, 6)}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  name                = "${var.prefix}acr${substr(md5(data.azurerm_resource_group.this.id), 0, 6)}"
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
   sku                 = "Basic"
   admin_enabled       = false # pulls go through the managed identity, not passwords
   tags                = var.tags
@@ -49,8 +48,8 @@ resource "azurerm_container_registry" "this" {
 
 resource "azurerm_user_assigned_identity" "apps" {
   name                = "${var.prefix}-apps-id"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
   tags                = var.tags
 }
 
@@ -62,7 +61,7 @@ resource "azurerm_role_assignment" "acr_pull" {
 
 resource "azurerm_container_app" "dashboard" {
   name                         = "${var.prefix}-dashboard"
-  resource_group_name          = azurerm_resource_group.this.name
+  resource_group_name          = data.azurerm_resource_group.this.name
   container_app_environment_id = azurerm_container_app_environment.this.id
   revision_mode                = "Single"
   tags                         = var.tags
