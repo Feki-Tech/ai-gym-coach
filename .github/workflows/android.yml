@@ -1,0 +1,62 @@
+name: Android
+
+# Build + test the Android app and publish a sideloadable APK.
+#
+# Distribution is deliberately store-free for now: every run uploads the
+# debug APK (signed with the auto-generated debug key, installable on any
+# Android device with "install unknown apps" enabled) as a workflow artifact,
+# and a tag push `android-v*` attaches it to a public GitHub Release so it
+# can be downloaded straight from a phone browser. iPhones cannot sideload
+# an APK — the iOS app's TestFlight pipeline (testflight.yml) is the
+# store-free path there.
+#
+# The pose model is downloaded by the `downloadPoseModel` gradle task at
+# build time (same pattern as the desktop's ensure_model) — never committed.
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android.yml"]
+    tags: ["android-v*"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # tag builds attach the APK to a release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests (core port)
+        run: |
+          chmod +x gradlew
+          ./gradlew test
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gymcoach-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Attach APK to release (android-v* tags)
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/debug/app-debug.apk

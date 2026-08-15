@@ -25,6 +25,13 @@ classifier.candidate.npz
 .idea/
 .vscode/
 
+# Android (generated or user-specific; the pose model is fetched at build
+# time by the downloadPoseModel gradle task, never committed)
+android/.gradle/
+android/local.properties
+android/**/build/
+android/app/src/main/assets/pose_landmarker_lite.task
+
 # Xcode / Swift (generated or user-specific)
 ios/GymCoach/GymCoach.xcodeproj/
 ios/GymCoach/Info.plist

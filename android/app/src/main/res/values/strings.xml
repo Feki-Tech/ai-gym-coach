@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gym Coach</string>
+    <string name="auto_detect">Auto-detect</string>
+    <string name="detecting">Detecting…</string>
+    <string name="camera_needed">Camera permission is required — the coach watches your form.</string>
+    <string name="hint_auto">Start moving — I\'ll recognize the exercise.</string>
+    <string name="hold_s">%1$.0f s hold</string>
+    <string name="session_done">Set done: %1$d reps, avg score %2$s</string>
+    <string name="finish_set">Finish set</string>
+</resources>

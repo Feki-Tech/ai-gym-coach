@@ -150,7 +150,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] DTW comparison against expert reference reps (`--record-reference`)
 - [x] ML exercise auto-classification — numpy MLP on windowed skeleton features (`--train-classifier`, `--collect`)
 - [x] Guided workout programs — the app (or the LLM coach) runs whole sessions: sets, rests, exercise switches (`--program`)
-- [ ] Android app (MediaPipe Tasks, Kotlin)
+- [x] Android app (MediaPipe Tasks, Kotlin) — sideloadable APK from CI, see [android/README.md](android/README.md)
 - [ ] Infrastructure: locked dependencies (uv), classifier versioning + promotion gate, optional Azure demo deploy — phased plan in [docs/INFRA.md](docs/INFRA.md)
 
 ## Disclaimer
