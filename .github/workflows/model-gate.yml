@@ -6,7 +6,9 @@ name: model-gate
 #
 # The shipped classifier.npz lives on each user's machine (gitignored), so in
 # CI there is no champion to compare against: this run proves the training
-# path and the absolute quality bar. The champion comparison happens where
+# path and the absolute quality bar. Once data/eval_windows.jsonl holds
+# exported real windows, this harness judges on real movement too — the
+# manifest's eval.real_overall is the number to watch (docs/DATA_COLLECTION.md). The champion comparison happens where
 # the champion lives — locally, via `python pose_coach.py --train-classifier`.
 
 on:

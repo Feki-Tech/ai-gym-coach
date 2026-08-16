@@ -377,6 +377,16 @@ FEAT_KEYS = ("trunk", "knee", "elbow", "hip", "sho_y", "wri_y",
 NDIM = 4 * len(FEAT_KEYS) + 2
 MODEL_FILE = "classifier.npz"
 
+# Committed real eval set (docs/DATA_COLLECTION.md). Rows have the same shape
+# as --collect output but are versioned in git, so the harness — including the
+# model-gate CI run, which has no local --collect file — judges on real
+# movement, not just a different synthetic seed. Safe to publish: each row is
+# 38 aggregate statistics (means/stds/mins/maxes of joint angles and
+# torso-normalized travel) over a 2 s window — no images, no landmarks, no
+# timestamps, no identity. Rows come from the RESERVED slice of --collect
+# files via --export-eval and must never train (build_dataset refuses).
+EVAL_FILE = os.path.join("data", "eval_windows.jsonl")
+
 # Model lifecycle (docs/INFRA.md §4). The eval harness always generates from
 # EVAL_SEED — never the training seed — so its windows are held out from every
 # training run; every 5th collected real window is reserved for it too.
@@ -415,9 +425,19 @@ def _read_collected(path: str | None) -> list[tuple[str, list[float]]]:
 
 def _split_collected(rows: list) -> tuple[list, list]:
     """(train, eval) — every 5th row is reserved for the harness, by position,
-    so the same file always splits the same way and eval rows never train."""
+    so the same file always splits the same way and eval rows never train.
+    Corollary: only ever APPEND to a --collect file; deleting or reordering
+    rows reshuffles the split and leaks former eval rows into training."""
     return ([r for i, r in enumerate(rows) if i % 5 != 0],
             [r for i, r in enumerate(rows) if i % 5 == 0])
+
+
+def _row_key(x) -> str:
+    """Stable identity of a feature vector, for deduping rows that appear in
+    both a --collect file and the committed eval set (JSON float round-trips
+    are exact, so equal vectors serialize equally)."""
+    return hashlib.sha256(
+        json.dumps([float(v) for v in x]).encode()).hexdigest()
 
 
 def window_features(frames: list[dict]) -> np.ndarray:
@@ -589,6 +609,10 @@ def build_dataset(samples_per_class: int = 120, seed: int = 0,
     labeled windows recorded by --collect (JSONL rows {"label":..., "x":[...]}).
     Every 5th collected row is reserved for the eval harness and never trains
     (_split_collected), so harness numbers stay honest on real data too."""
+    if collected and os.path.abspath(collected) == os.path.abspath(EVAL_FILE):
+        raise ValueError(
+            f"--collect must not point at the committed eval set ({EVAL_FILE})"
+            " — those windows exist to judge models and must never train")
     rng = np.random.default_rng(seed)
     X, y = [], []
     for ci, ex in enumerate(ML_CLASSES):
@@ -603,37 +627,56 @@ def build_dataset(samples_per_class: int = 120, seed: int = 0,
 
 
 def evaluate_classifier(model: "TinyMLP", collected: str | None = None,
-                        samples_per_class: int = 60) -> dict:
+                        samples_per_class: int = 60,
+                        eval_file: str | None = EVAL_FILE) -> dict:
     """Fixed held-out harness: synthetic windows from EVAL_SEED (never a
-    training seed) + the reserved slice of collected real windows. The old
-    printed "validation accuracy" was a random split of the same generation
-    that trained the model — it could not catch regression; this can."""
+    training seed) + real windows — the reserved slice of any --collect file
+    plus the committed eval set (deduped, since exported rows come from that
+    reserved slice). The old printed "validation accuracy" was a random split
+    of the same generation that trained the model — it could not catch
+    regression; this can. real_overall is reported separately: with training
+    still mostly synthetic it is the number that actually measures the gap
+    the synthetic data papers over."""
     rng = np.random.default_rng(EVAL_SEED)
     X, y = [], []
     for ci, ex in enumerate(ML_CLASSES):
         for _ in range(samples_per_class):
             X.append(window_features(synth_frames(ex, rng)))
             y.append(ci)
-    _, eval_rows = _split_collected(_read_collected(collected))
-    for label, x in eval_rows:
+    n_synth = len(X)
+
+    _, reserved = _split_collected(_read_collected(collected))
+    seen: set[str] = set()
+    real_rows = []
+    for label, x in reserved + _read_collected(eval_file):
+        k = _row_key(x)
+        if k not in seen:
+            seen.add(k)
+            real_rows.append((label, x))
+    for label, x in real_rows:
         X.append(np.asarray(x, dtype=float))
         y.append(ML_CLASSES.index(label))
     X, y = np.array(X), np.array(y)
 
     pred = model.predict_proba(X).argmax(1)
+    ok = pred == y
     per_class = {}
     for ci, ex in enumerate(ML_CLASSES):
         m = y == ci
         if m.any():
-            per_class[ex] = float((pred[m] == ci).mean())
-    return {"overall": float((pred == y).mean()), "per_class": per_class,
-            "n_windows": int(len(X)), "n_real": len(eval_rows)}
+            per_class[ex] = float(ok[m].mean())
+    return {"overall": float(ok.mean()), "per_class": per_class,
+            "n_windows": int(len(X)), "n_real": len(real_rows),
+            "synth_overall": float(ok[:n_synth].mean()),
+            "real_overall": (float(ok[n_synth:].mean())
+                             if real_rows else None)}
 
 
 def train_classifier(model_path: str = MODEL_FILE,
                      collected: str | None = None,
                      samples_per_class: int = 120, epochs: int = 300,
-                     seed: int = 0) -> float:
+                     seed: int = 0,
+                     eval_file: str | None = EVAL_FILE) -> float:
     """Train the classifier, evaluate it on the fixed harness, and save the
     weights WITH a manifest recording exactly what produced them. Returns the
     harness accuracy. No gating here — promote_classifier is the gate."""
@@ -641,7 +684,7 @@ def train_classifier(model_path: str = MODEL_FILE,
     idx = np.random.default_rng(seed).permutation(len(X))
     model = TinyMLP(seed=seed).fit(X[idx], y[idx], epochs=epochs)
 
-    report = evaluate_classifier(model, collected)
+    report = evaluate_classifier(model, collected, eval_file=eval_file)
     train_hash = hashlib.sha256(
         np.ascontiguousarray(X).tobytes()).hexdigest()[:16]
     # Millisecond precision: this model trains in <1 s, so a whole-second
@@ -663,9 +706,12 @@ def train_classifier(model_path: str = MODEL_FILE,
     model.manifest = manifest
     model.save(model_path, manifest)
 
+    real = ("" if report["real_overall"] is None else
+            f", REAL {report['real_overall']:.1%} on {report['n_real']} windows")
     print(f"Trained on {len(X)} windows ({samples_per_class}/class synthetic "
           f"+ {n_real} collected), harness accuracy {report['overall']:.1%} "
-          f"({report['n_windows']} held-out windows, seed {EVAL_SEED})")
+          f"({report['n_windows']} held-out windows, seed {EVAL_SEED}"
+          f"; synthetic {report['synth_overall']:.1%}{real})")
     for ex, acc in report["per_class"].items():
         print(f"  {ex:15s} {acc:6.1%}")
     print(f"Model saved -> {model_path} (version {manifest['model_version']})")
@@ -675,7 +721,8 @@ def train_classifier(model_path: str = MODEL_FILE,
 def promote_classifier(model_path: str = MODEL_FILE,
                        collected: str | None = None,
                        samples_per_class: int = 120, epochs: int = 300,
-                       seed: int = 0) -> int:
+                       seed: int = 0,
+                       eval_file: str | None = EVAL_FILE) -> int:
     """Champion/challenger gate (docs/INFRA.md §4, same contract as
     edgesense's ml/promote.py): train a challenger to the candidate path,
     evaluate champion and challenger on the same fixed harness, and replace
@@ -684,17 +731,24 @@ def promote_classifier(model_path: str = MODEL_FILE,
     cand = candidate_path(model_path)
     try:
         print(f"Training challenger -> {cand}")
-        train_classifier(cand, collected, samples_per_class, epochs, seed)
+        train_classifier(cand, collected, samples_per_class, epochs, seed,
+                         eval_file=eval_file)
         challenger = TinyMLP.load(cand)
         ch_eval = challenger.manifest["eval"]
 
         champion = None
         if os.path.exists(model_path):
             champion = TinyMLP.load(model_path)
-            champ_eval = evaluate_classifier(champion, collected)
+            champ_eval = evaluate_classifier(champion, collected,
+                                             eval_file=eval_file)
+            champ_real = ("" if champ_eval["real_overall"] is None else
+                          f", real {champ_eval['real_overall']:.1%}")
             print(f"Champion: {champion.manifest.get('model_version')} "
-                  f"(harness {champ_eval['overall']:.1%})")
+                  f"(harness {champ_eval['overall']:.1%}{champ_real})")
 
+        # real_overall is reported but NOT gated yet: while training is still
+        # mostly synthetic, a small real set would make the gate noisy. Add
+        # real bars once data/eval_windows.jsonl holds ~40+ windows per class.
         failures = []
         if ch_eval["overall"] < GATE_ABS_OVERALL:
             failures.append(f"overall {ch_eval['overall']:.1%} "
@@ -729,6 +783,72 @@ def promote_classifier(model_path: str = MODEL_FILE,
     except Exception as exc:  # the gate must never half-replace a model
         print(f"gate error: {exc}", file=sys.stderr)
         return 2
+
+
+def export_eval_windows(collected: str, out: str = EVAL_FILE,
+                        per_class: int = 10) -> int:
+    """Move a balanced sample of REAL windows into the committed eval set.
+
+    Only the reserved slice of the --collect file is eligible — rows that
+    already never train — so committing them cannot leak training data into
+    the harness. Existing rows in `out` are deduped by vector identity;
+    re-running is a no-op. Returns the number of rows appended."""
+    rows = _read_collected(collected)
+    if not rows:
+        print(f"No usable rows in {collected}")
+        return 0
+    _, reserved = _split_collected(rows)
+    have: set[str] = {_row_key(x) for _, x in _read_collected(out)}
+    taken: dict[str, int] = {}
+    fresh = []
+    for label, x in reserved:
+        k = _row_key(x)
+        if k in have or taken.get(label, 0) >= per_class:
+            continue
+        have.add(k)
+        taken[label] = taken.get(label, 0) + 1
+        fresh.append({"label": label, "x": [float(v) for v in x]})
+    if fresh:
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "a", encoding="utf-8") as fh:
+            for row in fresh:
+                fh.write(json.dumps(row) + "\n")
+    total = len(_read_collected(out))
+    print(f"Exported {len(fresh)} window(s) from the reserved slice of "
+          f"{collected} -> {out} (now {total} total). Review the diff, then "
+          "commit — these rows judge every future model.")
+    for label in sorted(taken):
+        print(f"  {label:15s} +{taken[label]}")
+    return len(fresh)
+
+
+def collect_report(collected: str | None, eval_file: str = EVAL_FILE):
+    """Per-class volume check for the data-collection effort
+    (docs/DATA_COLLECTION.md): how many real windows exist, how the
+    positional split reserves them, and what the committed eval set holds."""
+    rows = _read_collected(collected)
+    train_rows, reserved = _split_collected(rows)
+    committed = _read_collected(eval_file)
+
+    def counts(rs):
+        c: dict[str, int] = {}
+        for label, _ in rs:
+            c[label] = c.get(label, 0) + 1
+        return c
+
+    ct, cr, cc = counts(train_rows), counts(reserved), counts(committed)
+    src = collected if rows or collected else "(no --collect file given)"
+    print(f"Real windows — {src} + {eval_file}:")
+    print(f"  {'class':15s} {'train':>6s} {'reserved':>9s} {'committed':>10s}")
+    for ex in ML_CLASSES:
+        print(f"  {ex:15s} {ct.get(ex, 0):6d} {cr.get(ex, 0):9d} "
+              f"{cc.get(ex, 0):10d}")
+    print(f"  {'total':15s} {len(train_rows):6d} {len(reserved):9d} "
+          f"{len(committed):10d}")
+    missing = [ex for ex in ML_CLASSES
+               if ct.get(ex, 0) + cr.get(ex, 0) + cc.get(ex, 0) == 0]
+    if missing:
+        print(f"  no real data yet for: {', '.join(missing)}")
 
 
 class MLDetector(AutoDetector):
@@ -2061,7 +2181,8 @@ def selftest():
         mp_ = os.path.join(td, "clf.npz")
         buf = io.StringIO()
         with redirect_stdout(buf):
-            acc = train_classifier(mp_, samples_per_class=40, epochs=200)
+            acc = train_classifier(mp_, samples_per_class=40, epochs=200,
+                                   eval_file=None)
         assert acc >= 0.9, f"val accuracy only {acc:.1%}"
         m = TinyMLP.load(mp_)
         X, y, _ = build_dataset(samples_per_class=10, seed=7)
@@ -2072,7 +2193,8 @@ def selftest():
     with tempfile.TemporaryDirectory() as td:
         mp_ = os.path.join(td, "clf.npz")
         with redirect_stdout(io.StringIO()):
-            train_classifier(mp_, samples_per_class=40, epochs=200)
+            train_classifier(mp_, samples_per_class=40, epochs=200,
+                             eval_file=None)
         model = TinyMLP.load(mp_)
         rng = np.random.default_rng(3)
         for expected in ("squat", "pushup", "curl", "shoulder_press"):
@@ -2155,7 +2277,8 @@ def selftest():
     with tempfile.TemporaryDirectory() as td:
         mp_ = os.path.join(td, "clf.npz")
         with redirect_stdout(io.StringIO()):
-            train_classifier(mp_, samples_per_class=40, epochs=200)
+            train_classifier(mp_, samples_per_class=40, epochs=200,
+                             eval_file=None)
         m = TinyMLP.load(mp_)
         man = m.manifest
         assert man["schema_version"] == MANIFEST_SCHEMA
@@ -2177,14 +2300,15 @@ def selftest():
         mp_ = os.path.join(td, "clf.npz")
         # no champion yet: first train promotes (absolute bar only)
         with redirect_stdout(io.StringIO()):
-            rc = promote_classifier(mp_, samples_per_class=40, epochs=200)
+            rc = promote_classifier(mp_, samples_per_class=40, epochs=200,
+                                    eval_file=None)
         assert rc == 0 and os.path.exists(mp_)
         champ_version = TinyMLP.load(mp_).manifest["model_version"]
         # sabotage the champion so any honest challenger beats it, then check
         # a good challenger passes the no-regression comparison and promotes
         with redirect_stdout(io.StringIO()):
             rc = promote_classifier(mp_, samples_per_class=40, epochs=200,
-                                    seed=1)
+                                    seed=1, eval_file=None)
         assert rc == 0
         assert TinyMLP.load(mp_).manifest["model_version"] != champ_version
         # an untrained challenger must be REFUSED and the champion kept:
@@ -2192,11 +2316,55 @@ def selftest():
         before = TinyMLP.load(mp_).manifest["model_version"]
         with redirect_stdout(io.StringIO()):
             rc = promote_classifier(mp_, samples_per_class=40, epochs=0,
-                                    seed=2)
+                                    seed=2, eval_file=None)
         assert rc == 1, "gate accepted an untrained challenger"
         assert TinyMLP.load(mp_).manifest["model_version"] == before
         assert os.path.exists(candidate_path(mp_))    # kept for inspection
     print("OK (bootstrap, promote, refusal keeps champion)")
+
+    print("24) real eval set:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        # fabricate a --collect file: 10 labeled windows for two classes
+        rng = np.random.default_rng(11)
+        col = os.path.join(td, "session.windows.jsonl")
+        with open(col, "w", encoding="utf-8") as fh:
+            for i in range(10):
+                ex = ("squat", "pushup")[i % 2]
+                x = [float(v) for v in window_features(synth_frames(ex, rng))]
+                fh.write(json.dumps({"label": ex, "x": x}) + "\n")
+        ev = os.path.join(td, "eval_windows.jsonl")
+
+        # export: only reserved rows (positions 0,5) leave; rerun is a no-op
+        with redirect_stdout(io.StringIO()):
+            n = export_eval_windows(col, ev)
+            assert n == 2 and export_eval_windows(col, ev) == 0
+        reserved_keys = {_row_key(x)
+                         for _, x in _split_collected(_read_collected(col))[1]}
+        assert {_row_key(x) for _, x in _read_collected(ev)} <= reserved_keys
+
+        # harness counts committed rows once even when the same rows also
+        # arrive via the --collect reserved slice, and reports real_overall
+        with redirect_stdout(io.StringIO()):
+            mp_ = os.path.join(td, "clf.npz")
+            train_classifier(mp_, samples_per_class=40, epochs=200,
+                             eval_file=None)
+        m = TinyMLP.load(mp_)
+        r = evaluate_classifier(m, collected=col, samples_per_class=5,
+                                eval_file=ev)
+        assert r["n_real"] == 2 and r["real_overall"] is not None
+        assert r["n_windows"] == 5 * len(ML_CLASSES) + 2
+        r2 = evaluate_classifier(m, samples_per_class=5, eval_file=ev)
+        assert r2["n_real"] == 2                     # committed set alone
+        assert evaluate_classifier(m, samples_per_class=5,
+                                   eval_file=None)["real_overall"] is None
+
+        # the committed eval set must never train
+        try:
+            build_dataset(collected=EVAL_FILE)
+            raise AssertionError("build_dataset accepted the eval set")
+        except ValueError:
+            pass
+    print("OK (export from reserved slice, dedup, never trains)")
 
     print("\nAll selftests passed.")
 
@@ -2245,7 +2413,19 @@ if __name__ == "__main__":
     ap.add_argument("--collect", metavar="JSONL",
                     help="with --exercise: append labeled feature windows "
                          "from this session; with --train-classifier: also "
-                         "train on that file")
+                         "train on that file (recording protocol: "
+                         "docs/DATA_COLLECTION.md)")
+    ap.add_argument("--collect-report", action="store_true",
+                    help="print per-class real-window counts for the "
+                         "--collect file and the committed eval set, and exit")
+    ap.add_argument("--export-eval", action="store_true",
+                    help="append a balanced, deduped sample of the RESERVED "
+                         "slice of --collect to the committed eval set "
+                         f"({EVAL_FILE}) and exit; the harness then judges "
+                         "on real movement everywhere, including CI")
+    ap.add_argument("--eval-per-class", type=int, default=10, metavar="N",
+                    help="with --export-eval: max new windows per class "
+                         "(default 10)")
     ap.add_argument("--program", metavar="PLAN",
                     help="run a guided workout, e.g. \"squat 3x10 rest 90, "
                          "pushup 2x15 rest 45, plank 2x40s\" — the app "
@@ -2253,10 +2433,21 @@ if __name__ == "__main__":
                          "(the LLM coach can also start one: 'make me a "
                          "leg workout')")
     args = ap.parse_args()
+    if args.collect and not args.collect_report and \
+            os.path.abspath(args.collect) == os.path.abspath(EVAL_FILE):
+        sys.exit(f"--collect must not point at {EVAL_FILE} — the committed "
+                 "eval set judges models; it never trains and never takes "
+                 "raw session windows (use --export-eval to feed it)")
     if args.selftest:
         selftest()
     elif args.stats:
         print_stats(args.log_file)
+    elif args.collect_report:
+        collect_report(args.collect)
+    elif args.export_eval:
+        if not args.collect:
+            sys.exit("--export-eval needs --collect <file> as the source")
+        export_eval_windows(args.collect, per_class=args.eval_per_class)
     elif args.train_classifier:
         if args.no_gate:
             train_classifier(args.model_file, collected=args.collect)
