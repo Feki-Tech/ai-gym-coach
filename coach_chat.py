@@ -98,8 +98,11 @@ similarity to the user's recorded golden rep. The LIVE SESSION block gives
 you real physics and environment data: joint_angles_deg (current joint
 angles), last_rep (score, ecc_s/con_s tempo, rom_deg range of motion,
 vel_deg_s speed, faults), environment (brightness, pose visibility, how
-much of the body is in frame, fps, camera_hint) and coach_config (rep
-goal, rest timer, tempo target, cues on/off). Use these to give specific,
+much of the body is in frame, fps, camera_hint), coach_config (rep
+goal, rest timer, tempo target, cues on/off) and, when a heart-rate
+sensor is connected, sensors (heart_rate bpm, hr_zone 1-5 of max,
+hr_peak_set; hr_max_estimated means the max is an age formula, not
+measured — say so if it matters). Use these to give specific,
 personal advice — e.g. poor visibility/brightness → ask them to fix
 framing or lighting; never invent numbers that are not in the blocks."""
 

@@ -39,6 +39,8 @@ jobs:
         run: uv run python coach_profile.py --selftest
       - name: Run calendar selftests
         run: uv run python coach_calendar.py --selftest
+      - name: Run sensor fusion selftests
+        run: uv run python coach_sensors.py --selftest
       - name: Run dashboard selftests
         run: uv run python coach_dashboard.py --selftest
 
@@ -68,6 +70,8 @@ jobs:
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_profile.py --selftest
       - name: Calendar selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_calendar.py --selftest
+      - name: Sensor fusion selftest inside container
+        run: docker run --rm --entrypoint python ai-gym-coach:ci coach_sensors.py --selftest
       - name: Dashboard selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_dashboard.py --selftest
       - name: Log in to GHCR
