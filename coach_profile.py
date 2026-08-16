@@ -96,7 +96,9 @@ class ProfileStore:
         lines = [f"- [{cat}] {key.replace('_', ' ')}: {val}"
                  for cat, key, val, _ in rows]
         return ("ABOUT THE ATHLETE (long-term profile, remembered across "
-                "sessions — personalise your coaching with it):\n"
+                "sessions — personalise your coaching with it; injuries "
+                "and pain are hard constraints to respect and mention "
+                "when planning):\n"
                 + "\n".join(lines))
 
     def pretty(self) -> str:

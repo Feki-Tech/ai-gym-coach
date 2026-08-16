@@ -666,14 +666,19 @@ def main(argv=None) -> int:
                            "seed": args.seed})
     print()
     print(format_md(report))
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=1, ensure_ascii=False)
-        print(f"\nreport -> {args.out}")
-    if args.md:
-        with open(args.md, "w", encoding="utf-8") as fh:
-            fh.write(format_md(report) + "\n")
-        print(f"markdown -> {args.md}")
+    for path, text in ((args.out, None), (args.md, format_md(report) + "\n")):
+        if not path:
+            continue
+        try:                       # a 10-minute run must not die on a mkdir
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                if text is None:
+                    json.dump(report, fh, indent=1, ensure_ascii=False)
+                else:
+                    fh.write(text)
+            print(f"\n{'report' if text is None else 'markdown'} -> {path}")
+        except OSError as e:
+            print(f"\ncould not write {path}: {e}")
     if args.gate:
         try:
             with open(args.gate, encoding="utf-8") as fh:

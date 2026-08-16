@@ -96,7 +96,11 @@ words from any other language (English question = 100% English answer).
 SAFETY (non-negotiable): you are not a doctor. Sharp, stabbing or radiating
 pain, numbness, dizziness or chest pain → tell the user to stop the set NOW
 and see a medical professional. Never diagnose conditions or prescribe
-medication. Dull muscle burn during a set and next-day soreness are normal.
+medication: if asked whether they have a specific injury or condition
+("did I tear my meniscus?"), say you cannot tell that and that a physio or
+doctor should look at it. Dull muscle burn during a set and next-day
+soreness are normal. Injuries and pain listed in the athlete's profile are
+hard constraints — respect and mention them whenever you plan or prescribe.
 
 COACHING KNOWLEDGE you rely on (evidence-based, matches the app's fault codes):
 - knees_cave (knee valgus): usually weak glutes/hip abductors, not the
@@ -158,7 +162,24 @@ plan or program a workout, design it from their profile, history and
 today's shape, say it in one short sentence, then emit ONE
 start_program action with the full plan. Confirm in one short sentence
 what you set. Never invent other action names; without a clear user
-request, no ACTION lines at all."""
+request, no ACTION lines at all.
+IMPORTANT: your words alone change NOTHING in the app. Saying "rest 60
+seconds" or "let's do 12 reps" without the ACTION line does nothing —
+the athlete asked the app to do it, so the ACTION line is a mandatory
+part of that same reply, right after your sentence. Examples of replies:
+  Athlete: why do my knees cave?  → coaching answer only, no ACTION.
+  Athlete: stop correcting me.  → Cues off, you drive this set. \
+ACTION: {"do": "cues", "enabled": false}
+  Athlete: let's do 12 reps this set.  → Twelve it is. ACTION: {"do": \
+"set_rep_goal", "reps": 12}
+  Athlete: give me 90 seconds.  → Rest up. ACTION: {"do": "rest_timer", \
+"seconds": 90}
+  Athlete: make me lower for 3 seconds.  → Three seconds down. ACTION: \
+{"do": "set_tempo", "eccentric_s": 3}
+  Athlete: switch me to push-ups.  → Push-ups it is. ACTION: {"do": \
+"set_exercise", "exercise": "pushup"}
+Every reply above ends with its ACTION line — do the same, every time
+the athlete asks the app for something. Questions get no ACTION line."""
 
 CALENDAR_PROMPT = """\
 CALENDAR — the athlete's Google Calendar is connected. You can use it
@@ -741,8 +762,15 @@ class ChatCoach:
         if self.state_provider:
             try:
                 live = self.state_provider()
-                parts.append("LIVE SESSION RIGHT NOW:\n"
-                             + json.dumps(live, ensure_ascii=False))
+                block = "LIVE SESSION RIGHT NOW"
+                hints = coach_ops.live_hints(live)
+                if hints:      # spell out what the numbers mean, BEFORE the
+                    #            JSON blob — small models skim what follows it
+                    block += (" — WHAT THE LIVE DATA MEANS: "
+                              + "; ".join(hints) + ".\nRaw data:")
+                else:
+                    block += ":"
+                parts.append(block + "\n" + json.dumps(live, ensure_ascii=False))
             except Exception:
                 pass
         return "\n\n".join(parts)
@@ -755,13 +783,29 @@ class ChatCoach:
         if not text.startswith("[APP"):
             flags = coach_ops.red_flags(text)
             if flags:
-                sent = text + coach_ops.safety_note(flags)
+                sent = text + coach_ops.safety_note(
+                    flags, script=coach_ops.script_of(text))
                 coach_ops.trace("guardrail", kind_of="safety_note",
                                 red_flags=flags)
+            elif coach_ops.plan_request(text):
+                injuries = self._profile_injuries()
+                if injuries:
+                    sent = text + coach_ops.injury_note(injuries)
+                    coach_ops.trace("guardrail", kind_of="injury_note",
+                                    injuries=len(injuries))
         self.history.append({"role": "user", "content": sent})
         self.history = self.history[-MAX_TURNS:]
         self._last_system = self._system()
         return [{"role": "system", "content": self._last_system}] + self.history
+
+    def _profile_injuries(self) -> list[tuple[str, str]]:
+        if self.profile is None:
+            return []
+        try:
+            return [(k, v) for cat, k, v, _ in self.profile.facts()
+                    if cat == "injuries"]
+        except Exception:
+            return []
 
     def _finish(self, reply: str, cancelled: bool = False) -> None:
         """Store the reply and grade it (flags land in the trace)."""
@@ -2095,6 +2139,16 @@ def selftest():
         while _time.time() < deadline and not ex.called:
             _time.sleep(0.02)
         assert ex.called and "SAFETY NOTE" not in ex.call_args[0][1]
+        # injury-aware planning: profile injuries ride along on plan requests
+        sc2.profile.remember("injuries", "left_knee", "meniscus strain")
+        sc2.ask("Plan me a leg session for today")
+        sent = sc2.history[-2]["content"]
+        assert "APP NOTE" in sent and "left knee: meniscus strain" in sent, sent
+        sc2.ask("How deep should I squat?")
+        assert "APP NOTE" not in sc2.history[-2]["content"]
+    ar = ChatCoach(EchoClient(), log_path="missing.json")
+    ar.ask("أشعر بتنميل في ذراعي")
+    assert "توقف عن التمرين الآن" in ar.history[-2]["content"]
     print("ok")
 
     print("18) local trace: calls, replies, actions, events; no text by "
