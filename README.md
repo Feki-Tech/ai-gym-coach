@@ -20,11 +20,12 @@ your form, and coaches you with on-screen + voice feedback.
 - **Golden-rep comparison** — record your best rep once (`--record-reference`), then every future rep gets a 0-100 DTW similarity score against it (tempo-independent shape match)
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
 - **Web progress dashboard** — `python coach_dashboard.py` opens a local page with charts: weekly volume, form-score and rep trends per exercise, PRs, fault breakdowns, streaks (offline, no dependencies); `--demo` previews it with synthetic sample data
-- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally — see [docs/COACH.md](docs/COACH.md)
+- **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally. The coach also **speaks up on its own** — greets you with last session's key point, debriefs every finished set (score trend, dominant fault, one cue) and wraps up the session — and can **query your full training history** on demand instead of guessing numbers — see [docs/COACH.md](docs/COACH.md)
 - **The coach remembers you** — a local athlete profile (SQLite, never uploaded) auto-learns your goals, injuries, equipment and preferences from conversation and personalises future coaching; `/profile` `/remember` `/forget` to inspect or edit — see [docs/COACH.md](docs/COACH.md)
 - **The coach drives the app** — ask it to switch exercise, set a rep goal, start a rest timer, enforce tempo or mute cues, and it happens live; it also sees your joint angles and environment (lighting, framing, visibility) for smarter advice — see [docs/COACH.md](docs/COACH.md)
 - **Google Calendar** — connect once and the coach checks your week and books training sessions with you ("when can I train?" → "Tuesday 18:00 is free — book it?"); only calendar-events access, tokens stay local — see [docs/COACH.md §5](docs/COACH.md)
 - **Guided workout programs** — `--program "squat 3x10 rest 90, pushup 2x15 rest 45, plank 2x40s"` (or just tell the coach *"plan me a leg workout and start it"*): the app counts sets, runs the rest countdowns, switches exercises and announces every step
+- **Sensor fusion (PoC)** — `--sensors ble` pairs any standard BLE heart-rate strap (or `sim`/`udp:PORT`/`replay:FILE` without hardware): HR zones on the HUD, rest advice based on your actual heart-rate recovery instead of a countdown, per-session `avg_hr`/`peak_hr` in the log, and live physiology in the LLM coach's context — architecture and roadmap (IMU velocity, occlusion-proof reps) in [docs/SENSORS.md](docs/SENSORS.md)
 
 ## Quick start
 
@@ -151,6 +152,8 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] ML exercise auto-classification — numpy MLP on windowed skeleton features (`--train-classifier`, `--collect`)
 - [x] Guided workout programs — the app (or the LLM coach) runs whole sessions: sets, rests, exercise switches (`--program`)
 - [x] Android app (MediaPipe Tasks, Kotlin) — sideloadable APK from CI, see [android/README.md](android/README.md)
+- [x] Sensor fusion PoC — BLE heart rate + IMU sources, recovery-based rest, HR in the coach's context; design + phased plan in [docs/SENSORS.md](docs/SENSORS.md)
+- [ ] Sport coach expansion — running module, smart garments, HRV readiness, physio companion; evidence review in [docs/RESEARCH.md](docs/RESEARCH.md)
 - [ ] Infrastructure: locked dependencies (uv), classifier versioning + promotion gate, optional Azure demo deploy — phased plan in [docs/INFRA.md](docs/INFRA.md)
 
 ## Disclaimer

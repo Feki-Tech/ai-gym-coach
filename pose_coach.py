@@ -1177,7 +1177,8 @@ class WorkoutLog:
         })
 
     def finish(self, exercise: str, duration_s: float,
-               plank: PlankTracker | None = None) -> dict:
+               plank: PlankTracker | None = None,
+               extra_summary: dict | None = None) -> dict:
         s = self.session
         s["exercise"], s["duration_s"] = exercise, round(duration_s, 1)
         if plank:
@@ -1193,6 +1194,8 @@ class WorkoutLog:
             "fault_counts": self._fault_counts(reps),
             "velocity_loss_pct": self._velocity_loss(reps),
         }
+        if extra_summary:              # e.g. avg_hr/peak_hr from sensors
+            s["summary"].update(extra_summary)
         history = []
         if os.path.exists(self.path):
             try:
@@ -1506,7 +1509,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         coach: bool = False, record_reference: bool = False,
         reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
         model_file: str = MODEL_FILE, collect: str | None = None,
-        program: str | None = None):
+        program: str | None = None, sensors: str | None = None):
     import cv2
     prog_start = WorkoutProgram.parse(program) if program else None
     if prog_start:                    # program decides the first exercise
@@ -1578,9 +1581,43 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                 and time.time() >= session_cfg["rest_until"]:
             voice.say(msg)
 
+    # optional sensor fusion (docs/SENSORS.md) — absence degrades to
+    # exactly the camera-only behaviour
+    sensor_hub = effort = rest_advisor = None
+    next_sensor_t = 0.0
+    hr_stats = [0.0, 0, 0.0]           # sum, n, peak (session-wide)
+    if sensors:
+        import coach_sensors
+        sensor_hub = coach_sensors.hub_from_spec(sensors)
+        if sensor_hub is not None:
+            effort = coach_sensors.EffortModel()
+            rest_advisor = coach_sensors.RestAdvisor(effort)
+            print(f"Sensors on ({sensors}): heart-rate zones on the HUD, "
+                  "recovery-based rest advice, HR context for the coach.")
+
+    set_mark = 0                       # first log index of the current set
+
+    def debrief_set():
+        """Proactive coaching: hand the finished set to the chat coach for
+        a short spoken note (dropped silently if the coach is busy)."""
+        nonlocal set_mark
+        rows = log.session["reps"][set_mark:]
+        set_mark = len(log.session["reps"])
+        if rest_advisor is not None and rows:
+            rest_advisor.set_done()    # rest ends on HR recovery, not a guess
+        if chat and rows:
+            import coach_chat
+            payload = coach_chat.set_summary(rows)
+            if payload:
+                payload["exercise"] = exercise
+                if effort is not None and effort.current is not None:
+                    payload["hr_peak_set"] = round(effort.peak)
+                chat.notify_event("set_done", payload)
+
     def advance_program():
         """A set just finished — move the guided program forward."""
         nonlocal counter, plank, rep_traj
+        debrief_set()
         prog = session_cfg["program"]
         msg, rest_s, what = prog.on_set_done()
         print(f"Program: {msg}")
@@ -1621,6 +1658,12 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         if not headless:
             print("Press 'c' in the video window to interrupt the coach "
                   "and ask right away.")
+        # opening line: connect to last time ("last session your knees
+        # caved — watch that today"). Skipped silently on first-ever run.
+        brief = coach_chat.last_session_brief(
+            log_path, exercise=None if auto else exercise)
+        if brief:
+            chat.notify_event("session_start", brief)
 
     # video files use frame timestamps so processing speed doesn't skew
     # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
@@ -1695,6 +1738,25 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             if was_resting and rest_left <= 0:
                 voice.say("Rest over — back to work!")
             was_resting = rest_left > 0
+
+            if effort is not None and time.time() >= next_sensor_t:
+                next_sensor_t = time.time() + 1.0        # ~1 Hz is plenty
+                hr_sample = sensor_hub.latest("hr", max_age_s=10.0)
+                effort.update(hr_sample)
+                if hr_sample is not None:
+                    hr_stats[0] += hr_sample.value
+                    hr_stats[1] += 1
+                    hr_stats[2] = max(hr_stats[2], hr_sample.value)
+                msg = rest_advisor.check(
+                    hr_sample.value if hr_sample else None)
+                if msg:
+                    print(f"Sensors: {msg}")
+                    voice.say(msg)      # rest advice must speak during rest
+                    effort.new_set()    # peak restarts with the next set
+                if chat:
+                    snap = effort.snapshot()
+                    if snap:
+                        live_state["sensors"] = snap
 
             t = frame_idx / fps if video else time.time() - t0
             frame_idx += 1
@@ -1818,6 +1880,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                                 and not session_cfg["program"]):
                             voice.say(f"That's {goal} — goal reached! "
                                       "Take your rest.")
+                            debrief_set()
                         tempo_tgt = session_cfg["tempo_ecc_target"]
                         if tempo_tgt and ev.eccentric_s < tempo_tgt - 0.4:
                             say_cue(f"Slower on the way down — aim for "
@@ -1862,6 +1925,10 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                             + (f"   ref-sim: {last_sim}" if last_sim is not None else ""))
                     hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
                             f"trunk: {ang['trunk_lean']:4.1f}")
+
+                if effort is not None and effort.current is not None:
+                    hud2 += (f"   hr: {round(effort.current)}"
+                             f" (z{effort.zone()})")
 
                 h, w = frame.shape[:2]
                 for i, j in EDGES:
@@ -1931,13 +1998,33 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         print(f"Collected {len(collect_rows)} labeled windows -> {collect}  "
               f"(retrain: python pose_coach.py --train-classifier "
               f"--collect {collect})")
-    summary = log.finish(exercise, time.time() - t0, plank)
+    if sensor_hub is not None:
+        sensor_hub.stop()
+    hr_extra = None
+    if hr_stats[1]:
+        hr_extra = {"avg_hr": round(hr_stats[0] / hr_stats[1]),
+                    "peak_hr": round(hr_stats[2])}
+    summary = log.finish(exercise, time.time() - t0, plank,
+                         extra_summary=hr_extra)
     print_summary(summary)
-    if plank:
-        voice.say(f"Done. You held {int(plank.total)} seconds.")
-    elif summary["summary"]["reps"]:
-        voice.say(f"Set done. {summary['summary']['reps']} reps, "
-                  f"average score {int(summary['summary']['avg_score'])}.")
+    debriefed = False
+    if chat and (summary["summary"]["reps"] or plank):
+        # session wrap-up from the coach (one sentence, spoken); wait
+        # briefly so the debrief isn't cut off by process exit
+        payload = {"event_data": summary["summary"], "exercise": exercise,
+                   "duration_s": summary.get("duration_s")}
+        if chat.notify_event("session_done", payload):
+            debriefed = True
+            for _ in range(150):
+                if not (chat._busy or voice.is_speaking()):
+                    break
+                time.sleep(0.1)
+    if not debriefed:
+        if plank:
+            voice.say(f"Done. You held {int(plank.total)} seconds.")
+        elif summary["summary"]["reps"]:
+            voice.say(f"Set done. {summary['summary']['reps']} reps, "
+                      f"average score {int(summary['summary']['avg_score'])}.")
     time.sleep(1.5)   # let the last voice line play
     voice.stop()
 
@@ -2426,6 +2513,12 @@ if __name__ == "__main__":
     ap.add_argument("--eval-per-class", type=int, default=10, metavar="N",
                     help="with --export-eval: max new windows per class "
                          "(default 10)")
+    ap.add_argument("--sensors", metavar="SPEC",
+                    help="fuse extra sensors into the session "
+                         "(docs/SENSORS.md): sim | replay:FILE | udp:PORT "
+                         "| ble — heart-rate zones on the HUD, "
+                         "recovery-based rest advice, HR in the log and "
+                         "in the LLM coach's context")
     ap.add_argument("--program", metavar="PLAN",
                     help="run a guided workout, e.g. \"squat 3x10 rest 90, "
                          "pushup 2x15 rest 45, plank 2x40s\" — the app "
@@ -2465,4 +2558,4 @@ if __name__ == "__main__":
             record_reference=args.record_reference,
             reference_file=args.reference_file, detector_kind=args.detector,
             model_file=args.model_file, collect=args.collect,
-            program=args.program)
+            program=args.program, sensors=args.sensors)

@@ -1,0 +1,3 @@
+# Optional sensor extras (docs/SENSORS.md). Only needed for REAL Bluetooth
+# hardware (--sensors ble); sim/replay/udp sources are stdlib-only.
+bleak>=0.21
