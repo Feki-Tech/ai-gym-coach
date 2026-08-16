@@ -207,7 +207,29 @@ into the TTS. Tuning knobs:
 | `COACH_MAX_TOKENS` | `300` | hard cap on reply length — lower = snappier answers |
 
 A smaller/faster LLM also helps: `COACH_LLM_MODEL=llama3.2:1b`. Keep the
-Ollama container running between sessions so the model stays warm.
+Ollama container running between sessions so the model stays warm — the
+compose file now tells Ollama to hold the model in RAM for 2 h after the
+last request (`OLLAMA_KEEP_ALIVE`), so a long rest no longer pays the cold
+load again. `python coach_ops.py --doctor` tells you whether the model is
+warm right now.
+
+### Safety guardrail (deterministic)
+
+The persona tells the model to say *stop and see a professional* for
+sharp/radiating pain, numbness, dizziness, chest pain or breathing
+trouble. Small models don't always listen, so the app enforces it: when
+your message matches one of those symptoms (in English, French, Spanish,
+Arabic, German or Chinese) a `[SAFETY NOTE]` is attached to the turn before
+the model answers, and the reply is checked afterwards. This is a
+guardrail, not medical advice — the coach is still not a doctor.
+
+### Is the coach still behaving? (evals + trace)
+
+`python coach_eval.py` runs 31 scripted scenarios — safety, language,
+number grounding, app actions, calendar discipline, proactive events, style
+— against your local model and prints a per-category pass rate;
+`COACH_TRACE=coach_trace.jsonl` records latency and guardrail flags for a
+real session. Both are local files. Details in [LLMOPS.md](LLMOPS.md).
 
 ## 4. The coach remembers you (athlete profile)
 
@@ -296,6 +318,10 @@ Environment variables (or CLI flags on `coach_chat.py`):
 | `COACH_PROFILE_DB` | `coach_profile.db` | athlete profile the coach remembers you with |
 | `COACH_WHISPER_MODEL` | `base` | speech-recognition model size (`tiny`/`base`/`small`) |
 | `COACH_MAX_TOKENS` | `300` | max reply length in tokens |
+| `COACH_TEMPERATURE` | `0.5` | sampling temperature — lower = steadier, more literal (Ollama's own default is 0.8) |
+| `COACH_SEED` | unset | integer seed for repeatable replies (the eval harness sets one) |
+| `COACH_TRACE` | unset | path of a local JSONL trace of every LLM call: latency, guardrail flags, actions — no message text unless `COACH_TRACE_TEXT=1`. `python coach_ops.py --report FILE` summarizes it. See [LLMOPS.md](LLMOPS.md) |
+| `OLLAMA_KEEP_ALIVE` | `2h` (compose) | how long the Ollama container keeps the model in RAM after the last request; the stock default of 5 min meant a long rest paid the cold load again |
 | `GOOGLE_CREDENTIALS_FILE` | `google_credentials.json` | OAuth client JSON from Google Cloud (§5) |
 | `GOOGLE_TOKEN_FILE` | `google_token.json` | where the calendar tokens are stored |
 

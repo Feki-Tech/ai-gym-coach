@@ -24,6 +24,7 @@ cite the code; everything else is marked *(proposed)*.
 | Model lifecycle | **none** — no version, no seed/data record in the artifact, validation accuracy printed but nothing gates; `train_classifier` unconditionally overwrites the model | `pose_coach.py:541-562` |
 | Cloud | none (by design — see §2) | — |
 | Observability | none beyond stdout; the dashboard is a local page | `coach_dashboard.py` |
+| LLM coach lifecycle | ✅ prompt version + fingerprint, opt-in local JSONL trace (metrics only by default), deterministic reply graders, safety guardrail, 31-scenario eval set with a baseline gate (exit 0/1/2), manual `coach-eval.yml` running a real model on the runner — see [LLMOPS.md](LLMOPS.md) | `coach_ops.py`, `coach_eval.py`, `data/coach_evals.jsonl` |
 
 ## 2. What deliberately does NOT transfer
 
@@ -168,6 +169,7 @@ happened:
 | 1. uv + lock | pyproject/uv.lock, lock-driven Docker, uv CI | none | — |
 | 2. classifier MLOps | manifest, eval harness, promotion gate, model-gate workflow | none | 1 (dev group) |
 | 3. Azure demo + CD | Terraform scaffold, OIDC deploy of the demo dashboard | ~€4/mo standing, €0 idle compute | 1 (lock-driven image) |
+| 2b. coach LLMOps | ✅ shipped — prompt registry, local trace, graders, guardrail, eval set + gate ([LLMOPS.md](LLMOPS.md)) | none | 1 |
 | 4. backend outlook | not scheduled | — | a product decision |
 
 Phases 1–2 improve the repo regardless of any cloud ambition. Phase 3 is the

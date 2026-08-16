@@ -35,6 +35,10 @@ jobs:
         run: uv run python pose_coach.py --selftest
       - name: Run coach chat selftests
         run: uv run python coach_chat.py --selftest
+      - name: Run coach LLMOps selftests (trace, graders, eval harness)
+        run: |
+          uv run python coach_ops.py --selftest
+          uv run python coach_eval.py --selftest
       - name: Run athlete profile selftests
         run: uv run python coach_profile.py --selftest
       - name: Run calendar selftests
@@ -66,6 +70,10 @@ jobs:
         run: docker run --rm ai-gym-coach:ci --selftest
       - name: Coach chat selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_chat.py --selftest
+      - name: Coach LLMOps selftests inside container
+        run: |
+          docker run --rm --entrypoint python ai-gym-coach:ci coach_ops.py --selftest
+          docker run --rm --entrypoint python ai-gym-coach:ci coach_eval.py --selftest
       - name: Athlete profile selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_profile.py --selftest
       - name: Calendar selftest inside container

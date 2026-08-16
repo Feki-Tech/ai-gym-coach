@@ -1,0 +1,113 @@
+name: coach-eval
+
+# Behaviour evals for the LLM coach against a REAL model (docs/LLMOPS.md).
+# The classifier has model-gate.yml; this is the coach's equivalent: pull a
+# model into Ollama on the runner, run data/coach_evals.jsonl through the
+# real prompt + real client, publish the per-category report, and — when a
+# baseline is committed — refuse regressions the same way ml gates do.
+#
+# Manual by design: a 3B model on a CPU runner takes ~10-20 min and the
+# result is a report to read, not a build to block. Selftests of the
+# harness itself run on every push in ci.yml (no LLM needed).
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Ollama model to evaluate"
+        default: "llama3.2:3b"
+        required: true
+      runs:
+        description: "repeat each scenario N times (pass rate = fraction)"
+        default: "1"
+        required: true
+      only:
+        description: "comma-separated scenario ids/categories (empty = all)"
+        default: ""
+        required: false
+      gate:
+        description: "compare against data/coach_eval_baseline.json"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.30"
+          enable-cache: true
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libgles2 libegl1 libglib2.0-0 espeak-ng
+      - name: Install dependencies (pinned from uv.lock)
+        run: uv sync --frozen --python 3.12
+      - name: Install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          if ! curl -sf localhost:11434/v1/models >/dev/null; then
+            OLLAMA_KEEP_ALIVE=1h nohup ollama serve > ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 30); do
+            curl -sf localhost:11434/v1/models >/dev/null && break
+            sleep 2
+          done
+          curl -sf localhost:11434/v1/models
+      - name: Pull model
+        run: ollama pull "${{ inputs.model }}"
+      - name: Backend doctor
+        run: uv run python coach_ops.py --doctor --model "${{ inputs.model }}"
+      - name: Run coach evals
+        id: evals
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ONLY="${{ inputs.only }}"
+          uv run python coach_eval.py \
+            --model "${{ inputs.model }}" \
+            --runs "${{ inputs.runs }}" \
+            ${ONLY:+--only "$ONLY"} \
+            --out coach_eval_report.json --md coach_eval_report.md \
+            | tee coach_eval_stdout.txt
+      - name: Gate against baseline
+        if: ${{ inputs.gate && hashFiles('data/coach_eval_baseline.json') != '' }}
+        run: |
+          uv run python - <<'EOF'
+          import json, sys
+          import coach_eval
+          rep = json.load(open("coach_eval_report.json", encoding="utf-8"))
+          base = json.load(open("data/coach_eval_baseline.json", encoding="utf-8"))
+          ok, notes = coach_eval.compare(rep, base)
+          print("\n".join(notes))
+          sys.exit(0 if ok else 1)
+          EOF
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f coach_eval_report.md ]; then
+            cat coach_eval_report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "eval did not produce a report — see logs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coach-eval-report          # model tag has ':' — not allowed in names
+          path: |
+            coach_eval_report.json
+            coach_eval_report.md
+            coach_eval_stdout.txt
+            ollama.log
+          if-no-files-found: ignore
+      - name: Fail the job if the eval failed
+        if: steps.evals.outcome == 'failure'
+        run: exit 1

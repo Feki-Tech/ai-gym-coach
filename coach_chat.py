@@ -31,6 +31,11 @@ Config (env vars):
     COACH_LLM_API_KEY    default "ollama" (set a real key for OpenAI etc.)
     COACH_LOG            default workout_log.json
     COACH_PROFILE_DB     default coach_profile.db
+    COACH_TEMPERATURE    default 0.5 (lower = steadier, more literal replies)
+    COACH_SEED           unset; set an int for reproducible replies (evals)
+    COACH_TRACE          unset; path of a local JSONL trace of every LLM
+                         call (latency, flags, actions — no text unless
+                         COACH_TRACE_TEXT=1). See docs/LLMOPS.md.
 
 Voice input needs optional extras (host only):  pip install -r requirements-voice.txt
 """
@@ -42,12 +47,14 @@ import os
 import re
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
 
 import coach_calendar
+import coach_ops
 import coach_profile
 
 DEFAULT_BASE = os.environ.get("COACH_LLM_BASE_URL", "http://localhost:11434/v1")
@@ -59,6 +66,24 @@ MAX_TURNS = 16          # user/assistant messages kept in context
 LISTEN_SECONDS = 6      # push-to-talk recording length
 # Spoken replies stay snappy on small local models; raise for long answers.
 MAX_REPLY_TOKENS = int(os.environ.get("COACH_MAX_TOKENS", "300"))
+
+
+def _env_float(name: str, default: float | None) -> float | None:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Ollama's default sampling temperature (0.8) makes small models wander off
+# the ACTION protocol and the language rule; 0.5 keeps the coach warm but
+# literal. Set COACH_SEED for repeatable answers (the eval harness does).
+DEFAULT_TEMPERATURE = _env_float("COACH_TEMPERATURE", 0.5)
+_seed_env = _env_float("COACH_SEED", None)
+DEFAULT_SEED: int | None = int(_seed_env) if _seed_env is not None else None
 
 PERSONA = """\
 You are "Coach", the friendly personal trainer inside the AI Gym Coach app.
@@ -194,11 +219,31 @@ class LLMClient:
     """Minimal OpenAI-compatible /chat/completions client (stdlib only)."""
 
     def __init__(self, base_url: str = DEFAULT_BASE, model: str = DEFAULT_MODEL,
-                 api_key: str = DEFAULT_KEY, timeout: float = 180.0):
+                 api_key: str = DEFAULT_KEY, timeout: float = 180.0,
+                 temperature: float | None = DEFAULT_TEMPERATURE,
+                 seed: int | None = DEFAULT_SEED):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
+        self.temperature = temperature
+        self.seed = seed
+        self.prompt_fp = ""          # set by ChatCoach; lands in the trace
+
+    def _payload(self, messages: list[dict], stream: bool,
+                 max_tokens: int = MAX_REPLY_TOKENS) -> dict:
+        p = {"model": self.model, "messages": messages,
+             "max_tokens": max_tokens, "stream": stream}
+        if self.temperature is not None:
+            p["temperature"] = self.temperature
+        if self.seed is not None:
+            p["seed"] = self.seed
+        return p
+
+    @staticmethod
+    def _system_chars(messages: list[dict]) -> int:
+        return sum(len(m.get("content") or "") for m in messages
+                   if m.get("role") == "system")
 
     def _open(self, payload: dict):
         req = urllib.request.Request(
@@ -231,14 +276,30 @@ class LLMClient:
             ) from e
 
     def chat(self, messages: list[dict]) -> str:
-        with self._open({"model": self.model, "messages": messages,
-                         "max_tokens": MAX_REPLY_TOKENS,
-                         "stream": False}) as resp:
-            data = json.loads(resp.read().decode())
+        t0 = time.monotonic()
+        rec = {"mode": "chat", "model": self.model, "prompt_fp": self.prompt_fp,
+               "system_chars": self._system_chars(messages),
+               "messages": len(messages)}
         try:
-            return data["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError) as e:
-            raise CoachOffline(f"Unexpected LLM response: {str(data)[:300]}") from e
+            with self._open(self._payload(messages, stream=False)) as resp:
+                data = json.loads(resp.read().decode())
+            try:
+                reply = data["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError) as e:
+                raise CoachOffline(
+                    f"Unexpected LLM response: {str(data)[:300]}") from e
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(usage, dict):
+                rec["prompt_tokens"] = usage.get("prompt_tokens")
+                rec["completion_tokens"] = usage.get("completion_tokens")
+            rec["reply_chars"] = len(reply)
+            return reply
+        except CoachOffline as e:
+            rec["error"] = str(e)[:120]
+            raise
+        finally:
+            rec["total_s"] = round(time.monotonic() - t0, 3)
+            coach_ops.trace("llm_call", **rec)
 
     def warm_up(self):
         """Pull the model into memory so the first real answer is instant.
@@ -248,22 +309,30 @@ class LLMClient:
         Best-effort: failures stay silent, the first question reports them.
         """
         def _ping():
+            t0 = time.monotonic()
             try:
-                with self._open({"model": self.model, "max_tokens": 1,
-                                 "messages": [{"role": "user",
-                                               "content": "hi"}],
-                                 "stream": False}) as resp:
+                with self._open(self._payload(
+                        [{"role": "user", "content": "hi"}], stream=False,
+                        max_tokens=1)) as resp:
                     resp.read()
-            except Exception:
-                pass
+                coach_ops.trace("warm_up", model=self.model,
+                                total_s=round(time.monotonic() - t0, 3))
+            except Exception as e:
+                coach_ops.trace("warm_up", model=self.model,
+                                total_s=round(time.monotonic() - t0, 3),
+                                error=str(e)[:120])
         threading.Thread(target=_ping, daemon=True).start()
 
     def chat_stream(self, messages: list[dict]):
         """Yield reply text deltas as the model produces them (SSE)."""
-        resp = self._open({"model": self.model, "messages": messages,
-                           "max_tokens": MAX_REPLY_TOKENS,
-                           "stream": True})
+        t0 = time.monotonic()
+        rec = {"mode": "stream", "model": self.model,
+               "prompt_fp": self.prompt_fp,
+               "system_chars": self._system_chars(messages),
+               "messages": len(messages), "reply_chars": 0, "chunks": 0,
+               "done": False}
         try:
+            resp = self._open(self._payload(messages, stream=True))
             with resp:
                 for raw in resp:
                     line = raw.decode("utf-8", "replace").strip()
@@ -271,6 +340,7 @@ class LLMClient:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        rec["done"] = True
                         return
                     try:
                         delta = data and json.loads(data)["choices"][0]["delta"]
@@ -278,10 +348,25 @@ class LLMClient:
                             TypeError):
                         continue
                     if delta and delta.get("content"):
+                        if rec["chunks"] == 0:
+                            rec["ttft_s"] = round(time.monotonic() - t0, 3)
+                        rec["chunks"] += 1
+                        rec["reply_chars"] += len(delta["content"])
                         yield delta["content"]
+            rec["done"] = True                    # stream ended without [DONE]
         except (urllib.error.URLError, OSError, TimeoutError) as e:
+            rec["error"] = "connection lost"
             raise CoachOffline("Connection to the LLM was lost "
                                "mid-reply — is the backend still up?") from e
+        except CoachOffline as e:
+            rec["error"] = str(e)[:120]
+            raise
+        finally:
+            # a consumer that stops early (barge-in) closes the generator
+            # → GeneratorExit lands here with done=False and no error
+            rec["cancelled"] = not rec["done"] and "error" not in rec
+            rec["total_s"] = round(time.monotonic() - t0, 3)
+            coach_ops.trace("llm_call", **rec)
 
 
 # ---------------------------------------------------------- text streaming
@@ -614,43 +699,98 @@ class ChatCoach:
         self.actions = actions                 # app-control protocol enabled
         self.calendar = calendar               # Google Calendar, if connected
         self.history: list[dict] = []          # user/assistant turns only
+        self.last_check: dict | None = None    # graders' verdict on last reply
+        self._last_user_raw = ""               # what the athlete really said
+        self._last_system = ""
+        # Fingerprint of the *static* prompt (persona + protocols) — the part
+        # a prompt edit changes. History, profile and live state are data.
+        self.prompt_fingerprint = coach_ops.prompt_fingerprint(
+            *self._static_parts())
+        try:
+            self.client.prompt_fp = self.prompt_fingerprint
+        except Exception:
+            pass
+
+    def _static_parts(self) -> list[str]:
+        parts = [PERSONA, APP_EVENTS_PROMPT, HISTORY_PROMPT]
+        if self.actions:
+            parts.append(ACTIONS_PROMPT)
+        if self.calendar is not None:
+            parts.append(CALENDAR_PROMPT)
+        return parts
 
     def _system(self) -> str:
-        parts = [PERSONA, "", APP_EVENTS_PROMPT, "",
-                 "RECENT SESSIONS (most recent last):",
-                 progress_summary(self.log_path)]
+        # Order matters for speed: Ollama/llama.cpp reuse the KV cache for
+        # the longest unchanged prefix, so everything static comes first and
+        # the parts that change every call (clock, live session) go last.
+        parts = list(self._static_parts())
+        parts.append("RECENT SESSIONS (most recent last):\n"
+                     + progress_summary(self.log_path))
         overview = history_overview(self.log_path)
         if overview:
-            parts += ["", "PER-EXERCISE OVERVIEW (whole history):", overview]
-        parts += ["", HISTORY_PROMPT]
-        if self.actions:
-            parts += ["", ACTIONS_PROMPT]
-        if self.calendar is not None:
-            parts += ["", CALENDAR_PROMPT]
-        parts += ["", "NOW: " + datetime.now().astimezone().strftime(
-            "%Y-%m-%d %H:%M, %A (UTC%z)")]
+            parts.append("PER-EXERCISE OVERVIEW (whole history):\n" + overview)
         if self.profile is not None:
             try:
                 block = self.profile.as_prompt()
                 if block:
-                    parts += ["", block]
+                    parts.append(block)
             except Exception:
                 pass
+        parts.append("NOW: " + datetime.now().astimezone().strftime(
+            "%Y-%m-%d %H:%M, %A (UTC%z)"))
         if self.state_provider:
             try:
                 live = self.state_provider()
-                parts += ["", "LIVE SESSION RIGHT NOW:",
-                          json.dumps(live, ensure_ascii=False)]
+                parts.append("LIVE SESSION RIGHT NOW:\n"
+                             + json.dumps(live, ensure_ascii=False))
             except Exception:
                 pass
-        return "\n".join(parts)
+        return "\n\n".join(parts)
+
+    def _prepare(self, text: str) -> list[dict]:
+        """Queue the user turn (with the deterministic safety guardrail when
+        a red-flag symptom is mentioned) and build the message list."""
+        self._last_user_raw = text
+        sent = text
+        if not text.startswith("[APP"):
+            flags = coach_ops.red_flags(text)
+            if flags:
+                sent = text + coach_ops.safety_note(flags)
+                coach_ops.trace("guardrail", kind_of="safety_note",
+                                red_flags=flags)
+        self.history.append({"role": "user", "content": sent})
+        self.history = self.history[-MAX_TURNS:]
+        self._last_system = self._system()
+        return [{"role": "system", "content": self._last_system}] + self.history
+
+    def _finish(self, reply: str, cancelled: bool = False) -> None:
+        """Store the reply and grade it (flags land in the trace)."""
+        if reply:
+            self.history.append({"role": "assistant", "content": reply})
+        try:
+            spoken, acts = parse_actions(reply)
+            context = self._last_system + "\n" + "\n".join(
+                m["content"] for m in self.history[:-1])
+            self.last_check = coach_ops.check_reply(
+                self._last_user_raw, reply, context=context, spoken=spoken,
+                actions=len(acts))
+            coach_ops.trace("reply", flags=self.last_check["flags"],
+                            words=self.last_check["words"],
+                            script_user=self.last_check["script_user"],
+                            script_reply=self.last_check["script_reply"],
+                            red_flags=self.last_check["red_flags"],
+                            ungrounded=self.last_check["ungrounded"][:8],
+                            actions=[a.get("do") for a in acts],
+                            cancelled=cancelled,
+                            app_message=self._last_user_raw.startswith("[APP"),
+                            user_text=self._last_user_raw, reply_text=reply)
+        except Exception:
+            self.last_check = None
 
     def ask(self, text: str) -> str:
-        self.history.append({"role": "user", "content": text})
-        self.history = self.history[-MAX_TURNS:]
-        messages = [{"role": "system", "content": self._system()}] + self.history
+        messages = self._prepare(text)
         reply = self.client.chat(messages)
-        self.history.append({"role": "assistant", "content": reply})
+        self._finish(reply)
         return reply
 
     def ask_stream(self, text: str, cancel: threading.Event | None = None):
@@ -659,21 +799,19 @@ class ChatCoach:
         If cancel is set mid-stream the answer stops early; whatever was
         already said is kept in history (marked "…") so a follow-up
         question stays coherent."""
-        self.history.append({"role": "user", "content": text})
-        self.history = self.history[-MAX_TURNS:]
-        messages = [{"role": "system", "content": self._system()}] + self.history
+        messages = self._prepare(text)
         parts: list[str] = []
+        cancelled = False
         try:
             for delta in self.client.chat_stream(messages):
                 if cancel is not None and cancel.is_set():
                     parts.append(" …")
+                    cancelled = True
                     break
                 parts.append(delta)
                 yield delta
         finally:
-            reply = "".join(parts).strip()
-            if reply:
-                self.history.append({"role": "assistant", "content": reply})
+            self._finish("".join(parts).strip(), cancelled=cancelled)
 
     def learn_async(self):
         """Mine the last exchange for durable athlete facts (background)."""
@@ -682,8 +820,11 @@ class ChatCoach:
         if self.history[-1]["role"] != "assistant":
             return
         reply = self.history[-1]["content"]
-        user = next((m["content"] for m in reversed(self.history)
-                     if m["role"] == "user"), "")
+        # the athlete's own words — never the app's safety note appended to
+        # them, so the profile can't pick up "[SAFETY NOTE ...]" as a fact
+        user = self._last_user_raw or next(
+            (m["content"] for m in reversed(self.history)
+             if m["role"] == "user"), "")
         if not user:
             return
 
@@ -1141,14 +1282,18 @@ class BackgroundChat:
         clean, acts = parse_actions(text)
         for a in acts:
             ack = None
-            if a.get("do") == "history_query":
+            ok = False
+            do = str(a.get("do", ""))
+            if do == "history_query":
                 ack, fb = execute_history_action(
                     getattr(self.coach, "log_path", DEFAULT_LOG), a)
+                ok = not (fb or "").startswith("HISTORY ERROR")
                 if fb:
                     feedback.append(fb)
-            elif str(a.get("do", "")).startswith("calendar_"):
+            elif do.startswith("calendar_"):
                 if self.calendar is not None:
                     ack, fb = execute_calendar_action(self.calendar, a)
+                    ok = not (fb or "").startswith("CALENDAR ERROR")
                     if fb:
                         feedback.append(fb)
             elif self.on_action is not None:
@@ -1156,10 +1301,13 @@ class BackgroundChat:
                     ack = self.on_action(a)
                 except Exception as e:
                     ack = f"(action failed: {e})"
+                ok = bool(ack) and not ack.startswith(
+                    ("I couldn't", "I don't know", "(action failed"))
                 if ack and ack.startswith(("I couldn't", "I don't know")):
                     feedback.append(
                         f"APP ERROR: {ack} Fix the problem and send a "
                         "corrected ACTION line.")
+            coach_ops.trace("action", do=do, ok=ok, ack=ack or "")
             if ack:
                 print(f"\n⚙️  {ack}")
                 self.speak(ack)
@@ -1192,12 +1340,17 @@ class BackgroundChat:
             text = self._q.get()
             self._busy = True
             self._cancel.clear()
+            rounds = 1
             try:
                 followup = self._answer_once(text)
                 for _ in range(2):             # tool loop, hard-capped
                     if not followup or self._cancel.is_set():
                         break
+                    rounds += 1
                     followup = self._answer_once(followup)
+                if rounds > 1:
+                    coach_ops.trace("tool_loop", rounds=rounds,
+                                    exhausted=bool(followup))
                 # app events are not athlete statements — never mine them
                 # for profile facts
                 if not text.startswith("[APP EVENT]"):
@@ -1205,6 +1358,7 @@ class BackgroundChat:
                     if learn:
                         learn()
             except CoachOffline as e:
+                coach_ops.trace("offline", error=str(e)[:120])
                 print(f"\n(coach offline) {e}\n")
             finally:
                 self._busy = False
@@ -1220,11 +1374,13 @@ class BackgroundChat:
         something is already queued, the event is DROPPED rather than
         interrupting or piling up. Returns True when queued."""
         if self._busy or not self._q.empty():
+            coach_ops.trace("event", event=event, queued=False)
             return False
         body = dict(payload or {})
         body["event"] = event
         try:
             self._q.put("[APP EVENT] " + json.dumps(body, ensure_ascii=False))
+            coach_ops.trace("event", event=event, queued=True)
             return True
         except Exception:
             return False
@@ -1289,6 +1445,9 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
     print(f"Coach chat ready (LLM: {coach.client.model} @ "
           f"{coach.client.base_url}) — type a question anytime; asking "
           "again mid-answer interrupts the coach.")
+    if coach_ops.TRACER.enabled:
+        print(f"LLM trace on → {coach_ops.TRACER.path} (local file; "
+              "python coach_ops.py --report to summarize)")
     if profile is not None:
         print("The coach remembers you between sessions (local file "
               f"{profile.path}). Commands: /profile /remember /forget")
@@ -1362,6 +1521,8 @@ def interactive(args):
         listen = False
     print(f"AI Gym Coach chat — model {coach.client.model} @ "
           f"{coach.client.base_url}")
+    if coach_ops.TRACER.enabled:
+        print(f"LLM trace on → {coach_ops.TRACER.path}")
     print("Ask about your workouts, form, programming, nutrition basics.")
     if coach.calendar is not None:
         print("📅 Google Calendar connected — the coach can check your week "
@@ -1416,6 +1577,9 @@ def interactive(args):
                     _speak_or_calendar(buf.strip(), coach, speaker, feedback)
                 print("\n")
                 if not feedback:
+                    if _round:
+                        coach_ops.trace("tool_loop", rounds=_round + 1,
+                                        exhausted=False)
                     break
                 pending = ("[APP DATA — automatic message from the app, not "
                            "the athlete]\n" + "\n".join(feedback)
@@ -1865,6 +2029,125 @@ def selftest():
     assert not bce.notify_event("set_done", {"reps": 5})
     print("ok")
 
+    print("16) sampling options + prompt fingerprint reach the request:",
+          end=" ")
+    with mock.patch.object(urllib.request, "urlopen",
+                           return_value=FakeResp(body)) as m:
+        cl = LLMClient("http://x/v1", "m", temperature=0.2, seed=7)
+        cl.chat([{"role": "user", "content": "hi"}])
+        sent = json.loads(m.call_args[0][0].data.decode())
+        assert sent["temperature"] == 0.2 and sent["seed"] == 7, sent
+        cl2 = LLMClient("http://x/v1", "m", temperature=None, seed=None)
+        cl2.chat([{"role": "user", "content": "hi"}])
+        sent = json.loads(m.call_args[0][0].data.decode())
+        assert "temperature" not in sent and "seed" not in sent
+    fp_plain = ChatCoach(client=LLMClient("http://x/v1"),
+                         log_path="missing.json").prompt_fingerprint
+    fp_act = ChatCoach(client=LLMClient("http://x/v1"), log_path="missing.json",
+                       actions=True).prompt_fingerprint
+    assert len(fp_plain) == 12 and fp_plain != fp_act
+    assert ChatCoach(client=LLMClient("http://x/v1"),
+                     log_path="missing.json").prompt_fingerprint == fp_plain
+    # static prompt first, volatile blocks (clock, live state) last → the
+    # backend's KV-prefix cache survives between calls
+    sm = ChatCoach(client=LLMClient("http://x/v1"), log_path="missing.json",
+                   actions=True,
+                   state_provider=lambda: {"reps": 1})._system()
+    assert sm.index("APP CONTROL") < sm.index("RECENT SESSIONS") \
+        < sm.index("\nNOW:") < sm.index("LIVE SESSION RIGHT NOW"), sm[:200]
+    print("ok")
+
+    print("17) safety guardrail: red flag -> app note, replies graded, "
+          "profile untouched:", end=" ")
+
+    class EchoClient:
+        model, base_url = "m", "http://x/v1"
+        def __init__(self): self.seen = []
+        def chat(self, messages):
+            self.seen.append(messages)
+            return "Keep pushing, you're doing great!"
+        def chat_stream(self, messages):
+            self.seen.append(messages)
+            yield "Keep pushing, "
+            yield "you're doing great!"
+
+    ecl = EchoClient()
+    sc = ChatCoach(ecl, log_path="missing.json")
+    list(sc.ask_stream("I feel a sharp pain in my chest"))
+    sent_user = ecl.seen[-1][-1]["content"]
+    assert "SAFETY NOTE" in sent_user and "chest pain" in sent_user, sent_user
+    assert sc._last_user_raw == "I feel a sharp pain in my chest"
+    assert "red_flag_unhandled" in sc.last_check["flags"], sc.last_check
+    sc.ask("How deep should I squat?")
+    assert "SAFETY NOTE" not in ecl.seen[-1][-1]["content"]
+    assert sc.last_check["flags"] == [], sc.last_check
+    sc.ask("كيف أحسن تمرين العقلة؟")
+    assert "script_mismatch" in sc.last_check["flags"], sc.last_check
+    with mock.patch.object(coach_profile, "extract_facts",
+                           return_value=[]) as ex, \
+            tempfile.TemporaryDirectory() as tmp:
+        sc2 = ChatCoach(EchoClient(), log_path="missing.json",
+                        profile=coach_profile.ProfileStore(
+                            os.path.join(tmp, "p.db")))
+        sc2.ask("My chest hurts, sharp pain")
+        sc2.learn_async()
+        deadline = _time.time() + 5
+        while _time.time() < deadline and not ex.called:
+            _time.sleep(0.02)
+        assert ex.called and "SAFETY NOTE" not in ex.call_args[0][1]
+    print("ok")
+
+    print("18) local trace: calls, replies, actions, events; no text by "
+          "default:", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        tp = os.path.join(td, "trace.jsonl")
+        old = coach_ops.TRACER
+        coach_ops.configure(tp)
+        try:
+            with mock.patch.object(urllib.request, "urlopen",
+                                   return_value=FakeStream(lines)):
+                tc = ChatCoach(LLMClient("http://x/v1", "m"),
+                               log_path="missing.json")
+                assert "".join(tc.ask_stream("go")) == "Push hard!"
+            with mock.patch.object(urllib.request, "urlopen",
+                                   side_effect=urllib.error.URLError("x")):
+                try:
+                    tc.ask("again")
+                except CoachOffline:
+                    pass
+            spoken5: list[str] = []
+            with redirect_stdout(io.StringIO()):
+                bt = BackgroundChat(ActingCoach(), speak=spoken5.append,
+                                    on_action=lambda a: "Rest timer: 60.")
+                assert bt.notify_event("set_done", {"reps": 3})
+                deadline = _time.time() + 5
+                while _time.time() < deadline and (bt._busy
+                                                   or not spoken5):
+                    _time.sleep(0.02)
+                _time.sleep(0.1)
+                bt._busy = True
+                bt.notify_event("set_done", {"reps": 4})     # dropped
+        finally:
+            coach_ops.TRACER = old
+        rows = coach_ops.load_trace(tp)
+        kinds = [r["kind"] for r in rows]
+        assert kinds.count("llm_call") == 2 and "reply" in kinds, kinds
+        calls = [r for r in rows if r["kind"] == "llm_call"]
+        assert calls[0]["mode"] == "stream" and calls[0]["done"] \
+            and calls[0]["reply_chars"] == 10 and "ttft_s" in calls[0], calls[0]
+        assert calls[1]["error"] and calls[1]["mode"] == "chat", calls[1]
+        assert calls[0]["prompt_fp"] == tc.prompt_fingerprint
+        acts_tr = [r for r in rows if r["kind"] == "action"]
+        assert acts_tr and acts_tr[0]["do"] == "rest_timer" and acts_tr[0]["ok"]
+        ev = [r for r in rows if r["kind"] == "event"]
+        assert [e["queued"] for e in ev] == [True, False], ev
+        raw = open(tp, encoding="utf-8").read()
+        assert "Push hard!" not in raw and "user_text" not in raw   # privacy
+        summ = coach_ops.summarize_trace(rows)
+        assert summ["llm_calls"] == 2 and summ["errors"] == 1
+        assert summ["events_dropped"] == 1
+    print("ok")
+
     print("\nAll coach_chat selftests passed.")
 
 
@@ -1892,8 +2175,15 @@ if __name__ == "__main__":
                          f"(default {coach_profile.DEFAULT_DB})")
     ap.add_argument("--no-profile", action="store_true",
                     help="don't read or store any athlete profile")
+    ap.add_argument("--trace", metavar="FILE.jsonl",
+                    default=os.environ.get("COACH_TRACE", ""),
+                    help="record every LLM call (latency, guardrail flags, "
+                         "actions; no text unless COACH_TRACE_TEXT=1) to a "
+                         "local JSONL file — see docs/LLMOPS.md")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
+    if args.trace:
+        coach_ops.configure(args.trace)
     if args.selftest:
         selftest()
     elif args.once:
