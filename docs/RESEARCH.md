@@ -183,3 +183,98 @@ dashboard grows per-type views.
 Research backlog to re-check before each phase: e-textile drift/washing
 progress, wrist-PPG accuracy at intensity, ACWR successor metrics, updated
 FDA/MDR guidance.
+
+## 7. Condition-aware and adaptive coaching
+
+A coach that only works for healthy, standing, able-bodied users is half a
+coach. Three feature classes extend the system to people with
+Einschränkungen — each with its own evidence base, and each judged against
+the §4 boundary. The pattern is always the same: a **condition profile**
+(athlete profile, SQLite, local) changes *exercise selection, cues and
+context* — never diagnosis, never treatment.
+
+### 7.1 Metabolic context: diabetes and CGM
+
+Exercise moves glucose in direction-dependent ways — sustained aerobic work
+tends to drop it, short anaerobic/high-intensity work can raise it, and
+hypoglycemia risk extends hours after training (including overnight) — all
+codified in the
+[Lancet consensus on exercise management in type 1 diabetes](https://www.thelancet.com/journals/landia/article/PIIS2213-8587(17)30014-1/abstract)
+and updated through
+[technology-focused reviews](https://link.springer.com/article/10.1007/s00125-024-06229-x)
+and [CGM-and-exercise literature](https://pmc.ncbi.nlm.nih.gov/articles/PMC6165159/);
+[interpretation targets for CGM data are internationally standardized](https://diabetesjournals.org/care/article/42/8/1593/36184/Clinical-Targets-for-Continuous-Glucose-Monitoring)
+(time-in-range, ADA
+[Standards of Care 2025](https://diabetesjournals.org/care/article/48/Supplement_1/S128/157561/6-Glycemic-Goals-and-Hypoglycemia-Standards-of)).
+[Exercise-advisor apps for T1D are an active research area](https://pmc.ncbi.nlm.nih.gov/articles/PMC9158247/).
+
+**Data path, local-first:** vendor CGM APIs are cloud-bound, but the
+open-source diabetes ecosystem (xDrip+, Nightscout) exposes readings
+locally — a natural `glucose` kind for the SensorHub (UDP/replay first,
+tier: consumer-estimate; the 5–15 min interstitial lag is documented and
+must be surfaced, not hidden).
+
+**Inside the line:** show the athlete's own CGM value + trend arrow on the
+HUD and in the coach's live context; per-session glucose journaling ("your
+glucose fell 40 mg/dL during that aerobic block — a pattern worth
+discussing with your care team"); consensus-sourced *education* framed as
+questions for their clinician. **On the line, review first:** anything
+*reactive* — "stop, glucose is falling" — is acute-care territory; hypo
+*alarms* stay the regulated CGM app's job, permanently. **Out:** insulin or
+carb dosing advice of any kind.
+
+### 7.2 Condition-adapted programming (same engine, different rules)
+
+- **Hypertension** — the counterintuitive, well-evidenced result: isometric
+  training (wall sits, planks — exercises the app already coaches) is among
+  the *most* effective modes for lowering resting BP
+  ([large network meta-analysis](https://pubmed.ncbi.nlm.nih.gov/37491419/),
+  [IRT meta-review 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC12357484/),
+  [RCT meta-analysis](https://pmc.ncbi.nlm.nih.gov/articles/PMC12989405/)).
+  A BP-aware mode reweights the catalog toward evidenced holds, adds
+  breathing cues (no breath-holding/Valsalva during holds), and journals
+  home BP readings as context.
+- **Cardiac maintenance** — home-based cardiac telerehab with wearable
+  ECG/HR is effective
+  ([Lancet Digital Health 2025 meta-analysis](https://www.thelancet.com/journals/landig/article/PIIS2589-7500(25)00012-3/fulltext),
+  [wearable-HR telerehab meta-analysis](https://pubmed.ncbi.nlm.nih.gov/38838406/),
+  [HF telerehab review](https://pmc.ncbi.nlm.nih.gov/articles/PMC12842665/)).
+  Shape: like the physio companion — **clinician-set** HR ceilings become
+  hard cue thresholds the EffortModel enforces ("above your prescribed
+  zone — ease off"). Clinician-prescribed only; never self-serve.
+- **Older adults / fall prevention** — strength-and-balance work is the
+  canonical intervention, and single-camera assessment of exactly our kind
+  is validated:
+  [chair-based exercise quality from joint angles](https://doi.org/10.3390/s25133907),
+  [vision-based sit-to-stand balance assessment](https://www.sciencedirect.com/science/article/abs/pii/S0966636225000013),
+  [CV gait features for fall-risk](https://www.mdpi.com/2076-3417/14/9/3867),
+  [postural-control screening (JMIR Aging 2025)](https://aging.jmir.org/2025/1/e73290).
+  A "gentle mode": chair-based catalog, the 30-second sit-to-stand as a
+  tracked functional metric, slower cue cadence, voice-first interaction.
+
+### 7.3 Body-adapted perception: wheelchair and seated athletes
+
+The uncomfortable research finding: mainstream pose estimators underperform
+on wheelchair users — enough that dedicated work exists on
+[synthetic-data techniques to fix the bias (WheelPose)](https://www.researchgate.net/publication/380523240_WheelPose_Data_Synthesis_Techniques_to_Improve_Pose_Estimation_Performance_on_Wheelchair_Users)
+and on [sparse-IMU alternatives (WheelPoser)](https://arxiv.org/html/2409.08494v1).
+Two consequences for us: a **seated exercise catalog** (curls, presses,
+seated raises — the ExerciseSpec/FSM machinery works unchanged on
+upper-body signals; established catalogs exist, e.g.
+[NCHPAD](https://www.nchpad.org/resources/upper-body-workout-for-wheelchair-users-seated-strength-training/)),
+with detection and form rules that never assume visible hips/knees; and a
+second argument for the SENSORS.md IMU path — where camera models are
+biased, worn sensors aren't. The synthetic-data fix mirrors this repo's own
+`synth_frames` approach; generating seated variants is the same trick.
+
+Accessibility of the *interaction* rides along for free: the coach is
+already voice-first, hands-free and localized (iOS) — eyes-free and
+low-vision use is a supported path, not an afterthought.
+
+### Phasing addendum
+
+| Phase | Scope | Evidence gate / boundary |
+|---|---|---|
+| S6 | condition profile + CGM display & glucose journal (xDrip-style local source) | §7.1 — display + education only; anything reactive needs review |
+| S7 | adaptive catalogs: gentle mode (chair + sit-to-stand metric), seated/wheelchair mode, BP-aware holds with breathing cues | §7.2/§7.3 validation studies |
+| S8 | clinician-prescribed guarded modes (cardiac HR ceilings, physio plans) | §4 + §7.2 — regulatory review before any release |

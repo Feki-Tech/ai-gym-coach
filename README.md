@@ -155,7 +155,7 @@ TestFlight **without a Mac** (CI does the signing and uploading).
 - [x] Android app (MediaPipe Tasks, Kotlin) — sideloadable APK from CI, see [android/README.md](android/README.md)
 - [x] Sensor fusion PoC — BLE heart rate + IMU sources, recovery-based rest, HR in the coach's context; design + phased plan in [docs/SENSORS.md](docs/SENSORS.md)
 - [x] Coach LLMOps — prompt versioning, local trace, deterministic guardrails, 34-scenario behaviour eval with baseline gate, `coach-eval` workflow — see [docs/LLMOPS.md](docs/LLMOPS.md); threat model (STRIDE + LLM-agent threats) and TB1 hardening in [docs/SECURITY.md](docs/SECURITY.md)
-- [ ] Sport coach expansion — running module, smart garments, HRV readiness, physio companion; evidence review in [docs/RESEARCH.md](docs/RESEARCH.md)
+- [ ] Sport coach expansion — running module, smart garments, HRV readiness, physio companion, condition-aware & adaptive coaching (CGM context, gentle/seated modes, clinician-guarded zones); evidence review in [docs/RESEARCH.md](docs/RESEARCH.md)
 - [ ] Infrastructure: locked dependencies (uv), classifier versioning + promotion gate, optional Azure demo deploy — phased plan in [docs/INFRA.md](docs/INFRA.md)
 
 ## Disclaimer
