@@ -100,6 +100,35 @@ first sentence instead of waiting for the full reply. Asking something new
 mid-answer cancels the old reply (the partial answer stays in the coach's
 memory, so follow-ups remain coherent).
 
+### The coach speaks up on its own
+
+You don't have to ask. Three moments trigger a short spoken note (max two
+sentences) without any question:
+
+- **Session start** — the coach connects to last time: *"Last squat session
+  averaged 84 but your knees kept caving — let's fix that today."* Skipped
+  silently on your very first session.
+- **Set done** (rep goal reached, or every set of a guided `--program`) —
+  the trend *inside* the set (scores fading? tempo rushing?) or its dominant
+  fault, plus one cue for the next set. A clean set gets celebrated.
+- **Session done** — a one-sentence wrap-up with the day's headline number.
+
+These notes are **disposable by design**: if you're mid-conversation with
+the coach (or a question is queued), the event is dropped rather than
+interrupting you. They never feed the athlete profile — only things *you*
+say do.
+
+### The coach can look up your history
+
+The prompt always carries your recent sessions plus a per-exercise overview
+of the *whole* log (sessions, total reps, best/recent average with an
+improving/steady/declining tag, top fault). For anything more specific the
+coach fetches real data instead of guessing: asking *"how did my squats go
+last month?"* makes it emit `ACTION: {"do": "history_query", "exercise":
+"squat", "days": 31}`; the app answers with the matching sessions and
+totals, and only then does the coach state numbers. Works in workout mode
+and in plain `python coach_chat.py` alike.
+
 ### Hands-free listening
 
 The HUD's third line shows the mic state:

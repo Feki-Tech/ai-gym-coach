@@ -1578,9 +1578,25 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                 and time.time() >= session_cfg["rest_until"]:
             voice.say(msg)
 
+    set_mark = 0                       # first log index of the current set
+
+    def debrief_set():
+        """Proactive coaching: hand the finished set to the chat coach for
+        a short spoken note (dropped silently if the coach is busy)."""
+        nonlocal set_mark
+        rows = log.session["reps"][set_mark:]
+        set_mark = len(log.session["reps"])
+        if chat and rows:
+            import coach_chat
+            payload = coach_chat.set_summary(rows)
+            if payload:
+                payload["exercise"] = exercise
+                chat.notify_event("set_done", payload)
+
     def advance_program():
         """A set just finished — move the guided program forward."""
         nonlocal counter, plank, rep_traj
+        debrief_set()
         prog = session_cfg["program"]
         msg, rest_s, what = prog.on_set_done()
         print(f"Program: {msg}")
@@ -1621,6 +1637,12 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         if not headless:
             print("Press 'c' in the video window to interrupt the coach "
                   "and ask right away.")
+        # opening line: connect to last time ("last session your knees
+        # caved — watch that today"). Skipped silently on first-ever run.
+        brief = coach_chat.last_session_brief(
+            log_path, exercise=None if auto else exercise)
+        if brief:
+            chat.notify_event("session_start", brief)
 
     # video files use frame timestamps so processing speed doesn't skew
     # tempo/rep timing (e.g. faster-than-realtime headless runs in Docker)
@@ -1818,6 +1840,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                                 and not session_cfg["program"]):
                             voice.say(f"That's {goal} — goal reached! "
                                       "Take your rest.")
+                            debrief_set()
                         tempo_tgt = session_cfg["tempo_ecc_target"]
                         if tempo_tgt and ev.eccentric_s < tempo_tgt - 0.4:
                             say_cue(f"Slower on the way down — aim for "
@@ -1933,11 +1956,24 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
               f"--collect {collect})")
     summary = log.finish(exercise, time.time() - t0, plank)
     print_summary(summary)
-    if plank:
-        voice.say(f"Done. You held {int(plank.total)} seconds.")
-    elif summary["summary"]["reps"]:
-        voice.say(f"Set done. {summary['summary']['reps']} reps, "
-                  f"average score {int(summary['summary']['avg_score'])}.")
+    debriefed = False
+    if chat and (summary["summary"]["reps"] or plank):
+        # session wrap-up from the coach (one sentence, spoken); wait
+        # briefly so the debrief isn't cut off by process exit
+        payload = {"event_data": summary["summary"], "exercise": exercise,
+                   "duration_s": summary.get("duration_s")}
+        if chat.notify_event("session_done", payload):
+            debriefed = True
+            for _ in range(150):
+                if not (chat._busy or voice.is_speaking()):
+                    break
+                time.sleep(0.1)
+    if not debriefed:
+        if plank:
+            voice.say(f"Done. You held {int(plank.total)} seconds.")
+        elif summary["summary"]["reps"]:
+            voice.say(f"Set done. {summary['summary']['reps']} reps, "
+                      f"average score {int(summary['summary']['avg_score'])}.")
     time.sleep(1.5)   # let the last voice line play
     voice.stop()
 

@@ -45,7 +45,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import coach_calendar
 import coach_profile
@@ -154,6 +154,32 @@ Example:
   You: Let me check your calendar.
   ACTION: {"do": "calendar_check", "days": 7}
   [APP DATA gives the agenda] → You: Tuesday evening is free — 18:00?"""
+
+HISTORY_PROMPT = """\
+HISTORY LOOKUP — the context above only shows recent sessions and coarse
+per-exercise trends. For anything more specific (a period, one exercise's
+sessions, exact numbers) NEVER guess or invent numbers — fetch the real
+data first by ending your reply with:
+ACTION: {"do": "history_query", "exercise": "squat", "days": 30}
+"exercise" (optional) is one exact app exercise name; "days" (optional,
+default 90, max 365) looks that far back. The app answers with [APP DATA]
+containing the matching sessions and totals — only then state numbers.
+Example:
+  Athlete: how did my squats go last month?
+  You: Let me pull up your squat sessions.
+  ACTION: {"do": "history_query", "exercise": "squat", "days": 31}"""
+
+APP_EVENTS_PROMPT = """\
+APP EVENTS — a message beginning with [APP EVENT] comes from the app
+itself, not the athlete. Reply with ONE short spoken coaching note (max 2
+sentences) in the athlete's language if the profile or conversation shows
+it, otherwise English. Use ONLY numbers present in the event. No ACTION
+lines. event=set_done: name the trend inside the set (scores/tempo) or its
+dominant fault and give exactly one cue for the next set; celebrate a
+clean set. event=session_start: greet in one sentence and connect to the
+last session's key point (its top fault or score). event=session_done:
+one-sentence wrap-up: the day's headline number and one thing to keep or
+fix next time."""
 
 
 class CoachOffline(RuntimeError):
@@ -370,6 +396,206 @@ def progress_summary(log_path: str, limit: int = 6) -> str:
     return "\n".join(lines) if lines else "No workouts logged yet."
 
 
+def _load_history(log_path: str) -> list[dict]:
+    if not log_path or not os.path.exists(log_path):
+        return []
+    try:
+        with open(log_path, encoding="utf-8") as fh:
+            history = json.load(fh)
+        return history if isinstance(history, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _started_dt(session: dict) -> "datetime | None":
+    raw = str(session.get("started", ""))
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def history_stats(log_path: str, exercise: str | None = None,
+                  days: int | None = None) -> dict:
+    """Filtered sessions + aggregates from the workout log.
+
+    Machine-usable counterpart to progress_summary: powers both the
+    per-exercise overview in the system prompt and the history_query
+    action, so the model states real numbers instead of inventing them."""
+    sessions = []
+    cutoff = None
+    if days:
+        cutoff = datetime.now() - timedelta(days=days)
+    for s in _load_history(log_path):
+        try:
+            if exercise and s.get("exercise") != exercise:
+                continue
+            dt = _started_dt(s)
+            if cutoff and dt and dt < cutoff:
+                continue
+            summ = s.get("summary", {}) or {}
+            row = {"started": str(s.get("started", "?"))[:16],
+                   "exercise": s.get("exercise", "?"),
+                   "reps": summ.get("reps") or 0,
+                   "avg_score": summ.get("avg_score"),
+                   "fault_counts": summ.get("fault_counts") or {},
+                   "velocity_loss_pct": summ.get("velocity_loss_pct")}
+            if s.get("plank"):
+                row["hold_s"] = (s["plank"] or {}).get("total_hold_s")
+            sessions.append(row)
+        except Exception:
+            continue
+    scored = [s["avg_score"] for s in sessions
+              if isinstance(s.get("avg_score"), (int, float))]
+    faults: dict[str, int] = {}
+    for s in sessions:
+        for k, v in s["fault_counts"].items():
+            try:
+                faults[k] = faults.get(k, 0) + int(v)
+            except (TypeError, ValueError):
+                continue
+    agg = {"sessions": len(sessions),
+           "total_reps": sum(s["reps"] for s in sessions),
+           "avg_score": round(sum(scored) / len(scored), 1) if scored else None,
+           "best_avg_score": max(scored) if scored else None,
+           "fault_counts": dict(sorted(faults.items(),
+                                       key=lambda kv: -kv[1])[:5])}
+    if len(scored) >= 4:                      # early-vs-late trend
+        half = len(scored) // 2
+        agg["score_trend"] = (round(sum(scored[:half]) / half, 1),
+                              round(sum(scored[half:])
+                                    / (len(scored) - half), 1))
+    return {"filter": {"exercise": exercise, "days": days},
+            "sessions": sessions, "aggregate": agg}
+
+
+def history_overview(log_path: str) -> str:
+    """Per-exercise trend block for the system prompt — the whole history
+    compressed to one line per exercise, so the coach can talk about
+    long-term progress without a lookup."""
+    by_ex: dict[str, list[dict]] = {}
+    for s in history_stats(log_path)["sessions"]:
+        by_ex.setdefault(s["exercise"], []).append(s)
+    lines = []
+    for ex in sorted(by_ex):
+        rows = by_ex[ex]
+        scored = [r["avg_score"] for r in rows
+                  if isinstance(r.get("avg_score"), (int, float))]
+        part = (f"- {ex}: {len(rows)} sessions (last {rows[-1]['started']})"
+                f", {sum(r['reps'] for r in rows)} reps total")
+        if scored:
+            recent = round(sum(scored[-3:]) / len(scored[-3:]), 1)
+            part += f", best avg {max(scored)}, recent avg {recent}"
+            if len(scored) > 3:
+                prior = round(sum(scored[:-3]) / len(scored[:-3]), 1)
+                part += (" (improving)" if recent > prior + 1 else
+                         " (declining)" if recent < prior - 1 else " (steady)")
+        holds = [r["hold_s"] for r in rows
+                 if isinstance(r.get("hold_s"), (int, float))]
+        if holds:
+            part += f", best hold {max(holds)}s"
+        faults: dict[str, int] = {}
+        for r in rows:
+            for k, v in r["fault_counts"].items():
+                faults[k] = faults.get(k, 0) + v
+        if faults:
+            top = max(faults.items(), key=lambda kv: kv[1])
+            part += f", top fault {top[0]}×{top[1]}"
+        lines.append(part)
+    return "\n".join(lines)
+
+
+def execute_history_action(log_path: str, action: dict) -> tuple[str, str | None]:
+    """Run a history_query action. Returns (spoken ack, [APP DATA] feedback),
+    mirroring execute_calendar_action's contract."""
+    try:
+        exercise = action.get("exercise") or None
+        if exercise is not None:
+            exercise = str(exercise)
+        try:
+            days = min(max(int(action.get("days", 90) or 90), 1), 365)
+        except (TypeError, ValueError):
+            days = 90
+        stats = history_stats(log_path, exercise=exercise, days=days)
+        rows = stats["sessions"][-20:]
+        agg = stats["aggregate"]
+        what = f"{exercise} sessions" if exercise else "sessions"
+        if not rows:
+            return ("", f"HISTORY — no {what} in the last {days} days.")
+        lines = [f"HISTORY — {what}, last {days} days "
+                 f"({agg['sessions']} sessions, {agg['total_reps']} reps"
+                 + (f", avg score {agg['avg_score']}, best {agg['best_avg_score']}"
+                    if agg["avg_score"] is not None else "") + "):"]
+        if agg.get("score_trend"):
+            a, b = agg["score_trend"]
+            lines.append(f"score trend early->late: {a} -> {b}")
+        if agg["fault_counts"]:
+            lines.append("faults: " + ", ".join(
+                f"{k}×{v}" for k, v in agg["fault_counts"].items()))
+        for r in rows:
+            part = f"- {r['started']} {r['exercise']}: {r['reps']} reps"
+            if r.get("avg_score") is not None:
+                part += f", avg {r['avg_score']}"
+            if r.get("hold_s") is not None:
+                part += f", hold {r['hold_s']}s"
+            if r["fault_counts"]:
+                top = max(r["fault_counts"].items(), key=lambda kv: kv[1])
+                part += f", top fault {top[0]}×{top[1]}"
+            lines.append(part)
+        return ("Let me pull up your history.", "\n".join(lines))
+    except Exception as e:
+        return ("", f"HISTORY ERROR: {e}")
+
+
+# ------------------------------------------------------- proactive events
+def set_summary(reps: list[dict]) -> dict | None:
+    """Compress one finished set's rep records into an event payload the
+    coach can debrief from — trends and faults, never raw dumps."""
+    if not reps:
+        return None
+    scores = [r.get("score") for r in reps
+              if isinstance(r.get("score"), (int, float))]
+    out: dict = {"reps": len(reps)}
+    if scores:
+        out["avg_score"] = round(sum(scores) / len(scores), 1)
+        out["first_rep_score"], out["last_rep_score"] = scores[0], scores[-1]
+        half = max(len(scores) // 2, 1)
+        out["score_trend"] = (round(sum(scores[:half]) / half, 1),
+                              round(sum(scores[half:])
+                                    / max(len(scores) - half, 1), 1))
+    faults: dict[str, int] = {}
+    for r in reps:
+        for f in r.get("faults") or []:
+            faults[f] = faults.get(f, 0) + 1
+    if faults:
+        out["fault_counts"] = dict(sorted(faults.items(),
+                                          key=lambda kv: -kv[1])[:3])
+    cons = [r.get("concentric_s") for r in reps
+            if isinstance(r.get("concentric_s"), (int, float))]
+    if cons:
+        out["avg_concentric_s"] = round(sum(cons) / len(cons), 2)
+    return out
+
+
+def last_session_brief(log_path: str, exercise: str | None = None) -> dict | None:
+    """The previous session's key numbers, for the session_start greeting.
+    Prefers the same exercise; falls back to the most recent session."""
+    rows = history_stats(log_path, exercise=exercise)["sessions"] \
+        or (history_stats(log_path)["sessions"] if exercise else [])
+    if not rows:
+        return None
+    last = rows[-1]
+    brief = {k: v for k, v in last.items()
+             if k in ("started", "exercise", "reps", "avg_score", "hold_s")
+             and v not in (None, 0)}
+    if last["fault_counts"]:
+        top = max(last["fault_counts"].items(), key=lambda kv: kv[1])
+        brief["top_fault"] = f"{top[0]}×{top[1]}"
+    return brief or None
+
+
 class ChatCoach:
     """Conversation state: persona + history/live-session context + memory."""
 
@@ -387,8 +613,13 @@ class ChatCoach:
         self.history: list[dict] = []          # user/assistant turns only
 
     def _system(self) -> str:
-        parts = [PERSONA, "", "TRAINING HISTORY (most recent last):",
+        parts = [PERSONA, "", APP_EVENTS_PROMPT, "",
+                 "RECENT SESSIONS (most recent last):",
                  progress_summary(self.log_path)]
+        overview = history_overview(self.log_path)
+        if overview:
+            parts += ["", "PER-EXERCISE OVERVIEW (whole history):", overview]
+        parts += ["", HISTORY_PROMPT]
         if self.actions:
             parts += ["", ACTIONS_PROMPT]
         if self.calendar is not None:
@@ -907,7 +1138,12 @@ class BackgroundChat:
         clean, acts = parse_actions(text)
         for a in acts:
             ack = None
-            if str(a.get("do", "")).startswith("calendar_"):
+            if a.get("do") == "history_query":
+                ack, fb = execute_history_action(
+                    getattr(self.coach, "log_path", DEFAULT_LOG), a)
+                if fb:
+                    feedback.append(fb)
+            elif str(a.get("do", "")).startswith("calendar_"):
                 if self.calendar is not None:
                     ack, fb = execute_calendar_action(self.calendar, a)
                     if fb:
@@ -959,9 +1195,12 @@ class BackgroundChat:
                     if not followup or self._cancel.is_set():
                         break
                     followup = self._answer_once(followup)
-                learn = getattr(self.coach, "learn_async", None)
-                if learn:
-                    learn()
+                # app events are not athlete statements — never mine them
+                # for profile facts
+                if not text.startswith("[APP EVENT]"):
+                    learn = getattr(self.coach, "learn_async", None)
+                    if learn:
+                        learn()
             except CoachOffline as e:
                 print(f"\n(coach offline) {e}\n")
             finally:
@@ -969,6 +1208,23 @@ class BackgroundChat:
 
     def ask_async(self, text: str):
         self.submit(text)
+
+    def notify_event(self, event: str, payload: dict | None = None) -> bool:
+        """Proactive coaching: hand the coach an app event (set_done,
+        session_start, session_done) to comment on in 1-2 spoken sentences.
+
+        Events are disposable — if the coach is answering the athlete or
+        something is already queued, the event is DROPPED rather than
+        interrupting or piling up. Returns True when queued."""
+        if self._busy or not self._q.empty():
+            return False
+        body = dict(payload or {})
+        body["event"] = event
+        try:
+            self._q.put("[APP EVENT] " + json.dumps(body, ensure_ascii=False))
+            return True
+        except Exception:
+            return False
 
     def push_to_talk(self):
         """Voice question via the 'c' key.
@@ -1047,17 +1303,22 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
 # ------------------------------------------------------------ interactive
 def _speak_or_calendar(sentence: str, coach: ChatCoach, speaker,
                        feedback: list[str]):
-    """interactive(): speak plain text, run calendar ACTION lines."""
+    """interactive(): speak plain text, run calendar/history ACTION lines."""
     clean, acts = parse_actions(sentence)
     for a in acts:
-        if (str(a.get("do", "")).startswith("calendar_")
+        ack = None
+        if a.get("do") == "history_query":
+            ack, fb = execute_history_action(coach.log_path, a)
+            if fb:
+                feedback.append(fb)
+        elif (str(a.get("do", "")).startswith("calendar_")
                 and coach.calendar is not None):
             ack, fb = execute_calendar_action(coach.calendar, a)
             if fb:
                 feedback.append(fb)
-            if ack:
-                print(f"\n⚙️  {ack}")
-                speaker.say(ack)
+        if ack:
+            print(f"\n⚙️  {ack}")
+            speaker.say(ack)
     if clean:
         speaker.say(clean)
 
@@ -1223,7 +1484,7 @@ def selftest():
                       state_provider=lambda: {"exercise": "curl", "reps": 7})
     sysmsg = coach._system()
     assert "LIVE SESSION" in sysmsg and '"reps": 7' in sysmsg, sysmsg
-    assert "TRAINING HISTORY" in sysmsg
+    assert "RECENT SESSIONS" in sysmsg
     print("ok")
 
     print("5) history trimming + reply stored:", end=" ")
@@ -1475,6 +1736,130 @@ def selftest():
     assert cc.asked[1].startswith("[APP DATA") and "Standup" in cc.asked[1]
     assert any("book it" in s for s in spoken2), spoken2
     assert not any("{" in s for s in spoken2)
+    print("ok")
+
+    print("13) history stats, overview + history_query loop:", end=" ")
+    hist = []
+    for i in range(8):
+        hist.append({"started": f"2026-08-{i + 1:02d} 10:00:00",
+                     "exercise": "squat",
+                     "summary": {"reps": 10, "avg_score": 78.0 + i,
+                                 "fault_counts": {"knees_cave": 2},
+                                 "velocity_loss_pct": None}})
+    hist.append({"started": "2026-08-09 10:00:00", "exercise": "plank",
+                 "plank": {"total_hold_s": 61.0, "best_streak_s": 40.0},
+                 "summary": {"reps": 0, "avg_score": None,
+                             "fault_counts": {}, "velocity_loss_pct": None}})
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "log.json")
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(hist, fh)
+        st = history_stats(p, exercise="squat")
+        assert st["aggregate"]["sessions"] == 8
+        assert st["aggregate"]["total_reps"] == 80
+        assert st["aggregate"]["best_avg_score"] == 85.0
+        a, b = st["aggregate"]["score_trend"]
+        assert b > a                                # improving early->late
+        ov = history_overview(p)
+        assert "squat: 8 sessions" in ov and "(improving)" in ov, ov
+        assert "best hold 61.0s" in ov, ov
+        assert "top fault knees_cave×16" in ov, ov
+        ack, fb = execute_history_action(p, {"do": "history_query",
+                                             "exercise": "squat",
+                                             "days": 36500})
+        assert ack and "8 sessions, 80 reps" in fb and "avg 85.0" in fb, fb
+        _, fb = execute_history_action(p, {"do": "history_query",
+                                           "exercise": "bench"})
+        assert "no bench sessions" in fb, fb
+        _, fb = execute_history_action(p, {"do": "history_query",
+                                           "days": "soon"})   # junk tolerated
+        assert fb and "ERROR" not in fb
+        # system prompt carries the overview + the lookup protocol
+        hc = ChatCoach(client=LLMClient("http://x/v1"), log_path=p)
+        smsg = hc._system()
+        assert "PER-EXERCISE OVERVIEW" in smsg and "history_query" in smsg
+
+        # tool loop: question -> history_query -> [APP DATA] -> real answer
+        class HistCoach:
+            log_path = p
+            calendar = None
+            def __init__(self): self.asked = []
+            def ask_stream(self, text, cancel=None):
+                self.asked.append(text)
+                if text.startswith("[APP DATA"):
+                    yield "You averaged 85 on your best day."
+                else:
+                    yield ('Let me pull that up. '
+                           'ACTION: {"do": "history_query", '
+                           '"exercise": "squat", "days": 36500}')
+        hco = HistCoach()
+        spoken3: list[str] = []
+        with redirect_stdout(io.StringIO()):
+            bch = BackgroundChat(hco, speak=spoken3.append)
+            bch.submit("how did my squats go?")
+            deadline = _time.time() + 5
+            while _time.time() < deadline and len(hco.asked) < 2:
+                _time.sleep(0.02)
+            _time.sleep(0.1)
+        assert len(hco.asked) == 2 and "80 reps" in hco.asked[1], hco.asked
+        assert any("85" in s for s in spoken3), spoken3
+    print("ok")
+
+    print("14) set/session briefs for proactive events:", end=" ")
+    reps = [{"score": 95, "faults": [], "concentric_s": 1.0},
+            {"score": 90, "faults": ["shallow"], "concentric_s": 0.9},
+            {"score": 70, "faults": ["shallow", "back_lean"],
+             "concentric_s": 0.5},
+            {"score": 65, "faults": ["shallow"], "concentric_s": 0.4}]
+    ss = set_summary(reps)
+    assert ss["reps"] == 4 and ss["avg_score"] == 80.0
+    hi, lo = ss["score_trend"]
+    assert hi > lo                                  # fading inside the set
+    assert ss["fault_counts"]["shallow"] == 3
+    assert set_summary([]) is None
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "log.json")
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(hist, fh)
+        brief = last_session_brief(p, exercise="squat")
+        assert brief["exercise"] == "squat" and brief["avg_score"] == 85.0
+        assert brief["top_fault"] == "knees_cave×2"
+        # unknown exercise falls back to the most recent session of any kind
+        assert last_session_brief(p, exercise="bench")["exercise"] == "plank"
+        assert last_session_brief(os.path.join(td, "no.json")) is None
+    print("ok")
+
+    print("15) app events: spoken debrief, dropped when busy, no learning:",
+          end=" ")
+
+    class EventCoach:
+        log_path = "missing.json"
+        calendar = None
+        def __init__(self):
+            self.asked = []
+            self.learned = 0
+        def ask_stream(self, text, cancel=None):
+            self.asked.append(text)
+            yield "Strong set — keep the depth next round."
+        def learn_async(self):
+            self.learned += 1
+
+    ec = EventCoach()
+    spoken4: list[str] = []
+    with redirect_stdout(io.StringIO()):
+        bce = BackgroundChat(ec, speak=spoken4.append)
+        assert bce.notify_event("set_done", {"reps": 8, "avg_score": 88.0})
+        deadline = _time.time() + 5
+        while _time.time() < deadline and (not ec.asked or bce._busy):
+            _time.sleep(0.02)
+        _time.sleep(0.05)
+    assert ec.asked and ec.asked[0].startswith("[APP EVENT]"), ec.asked
+    evt = json.loads(ec.asked[0][len("[APP EVENT] "):])
+    assert evt == {"reps": 8, "avg_score": 88.0, "event": "set_done"}
+    assert any("Strong set" in s for s in spoken4), spoken4
+    assert ec.learned == 0                # events never feed the profile
+    bce._busy = True                      # athlete mid-conversation
+    assert not bce.notify_event("set_done", {"reps": 5})
     print("ok")
 
     print("\nAll coach_chat selftests passed.")
