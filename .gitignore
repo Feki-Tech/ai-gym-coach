@@ -22,6 +22,12 @@ classifier.candidate.npz
 *.manifest.json
 *.windows.jsonl
 
+# coach LLM trace (local, may contain your questions if COACH_TRACE_TEXT=1)
+# and ad-hoc eval reports; the committed baseline lives in data/
+coach_trace*.jsonl
+coach_eval_report*.json
+coach_eval_report*.md
+
 .idea/
 .vscode/
 

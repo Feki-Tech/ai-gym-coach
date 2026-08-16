@@ -5,6 +5,7 @@
 venv
 docs
 data
+!data/coach_evals.jsonl
 README.md
 docker-compose.yml
 Dockerfile

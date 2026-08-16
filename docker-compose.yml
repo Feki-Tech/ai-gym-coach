@@ -63,6 +63,12 @@ services:
     image: ollama/ollama:latest
     ports:
       - "11434:11434"
+    environment:
+      # Ollama drops an idle model from RAM after 5 min by default, so every
+      # rest longer than that paid the cold load again (30+ s on CPU). Keep
+      # it resident for a whole training session; 0 = unload immediately,
+      # -1 = keep forever.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-2h}
     volumes:
       - ollama-models:/root/.ollama
 
