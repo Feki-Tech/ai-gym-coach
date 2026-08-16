@@ -1,0 +1,112 @@
+name: Terraform (Azure demo infra)
+
+# Runs terraform against the demo subscription so no local Terraform install
+# is ever needed. Manual dispatch only — the scaffold's posture is deliberate
+# applies and destroys, not continuous reconciliation.
+#
+#   action=plan     show what would change (also runs before every apply)
+#   action=apply    two-phase bootstrap on first run: registry/env/identity
+#                   first, then build+push the image (ACR Tasks is disabled on
+#                   this subscription), then the rest. Idempotent thereafter.
+#   action=destroy  tear down between demo periods (the default posture).
+#                   The resource group and role assignments survive — they are
+#                   owned by setup-azure-cd.sh, so a later apply just works.
+#
+# Auth is OIDC (no stored secrets); state lives in the azurerm backend created
+# by azure/scripts/setup-azure-cd.sh. Inert until the one-time setup is done
+# and the repository variables below exist.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What terraform should do"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+        required: true
+
+permissions:
+  id-token: write # OIDC
+  contents: read
+
+concurrency:
+  group: azure-terraform
+  cancel-in-progress: false
+
+env:
+  # azurerm 4.x requires an explicit subscription (az login alone is not
+  # enough); ARM_* is read by both the provider and the state backend.
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  terraform:
+    if: vars.AZURE_CLIENT_ID != '' && vars.TFSTATE_STORAGE_ACCOUNT != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: azure/infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper: false # keep `terraform output -raw` clean
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=gymcoach-demo.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
+
+      - name: terraform plan
+        run: terraform plan -input=false -no-color
+
+      - name: "apply phase 1: registry, environment, identity"
+        if: inputs.action == 'apply'
+        run: |
+          terraform apply -auto-approve -input=false -no-color \
+            -target=azurerm_container_registry.this \
+            -target=azurerm_container_app_environment.this \
+            -target=azurerm_user_assigned_identity.apps \
+            -target=azurerm_role_assignment.acr_pull
+
+      - name: "apply phase 2: image must exist before the app can pull"
+        if: inputs.action == 'apply'
+        run: |
+          acr=$(terraform output -raw acr_name 2>/dev/null) \
+            || acr=$(az acr list -g "${{ vars.RESOURCE_GROUP }}" --query "[0].name" -o tsv)
+          if ! az acr repository show -n "$acr" --repository ai-gym-coach -o none 2>/dev/null; then
+            ../scripts/build-and-push.sh "$acr" latest
+          else
+            echo "image already present in $acr, skipping build"
+          fi
+
+      - name: "apply phase 3: everything else"
+        if: inputs.action == 'apply'
+        run: |
+          terraform apply -auto-approve -input=false -no-color
+          url=$(terraform output -raw dashboard_url)
+          echo "### Demo dashboard" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+          echo "Set repository variable ACR_NAME=$(terraform output -raw acr_name) for azure-deploy.yml" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform destroy
+        if: inputs.action == 'destroy'
+        run: terraform destroy -auto-approve -input=false -no-color
