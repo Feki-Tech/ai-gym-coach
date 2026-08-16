@@ -10,6 +10,9 @@ one of those gaps is a sensor somebody already owns.
 
 This doc is the design for closing them: which sensors, what each one adds,
 the architecture that fuses them, and the shipped PoC (`coach_sensors.py`).
+Where this goes beyond the gym — running, smart garments, readiness, and
+the medical-assistance boundary — is the evidence review in
+[docs/RESEARCH.md](RESEARCH.md).
 The local-first stance (docs/INFRA.md §2) is non-negotiable throughout:
 sensor streams are processed in memory on the machine, summarized into the
 local workout log, and never uploaded.
