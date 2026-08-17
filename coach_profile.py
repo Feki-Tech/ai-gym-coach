@@ -93,7 +93,10 @@ class ProfileStore:
         rows = self.facts()
         if not rows:
             return ""
-        lines = [f"- [{cat}] {key.replace('_', ' ')}: {val}"
+        # values were typed by the athlete or extracted by the model — data,
+        # never protocol: no "ACTION:" / "[APP" / braces survive into the prompt
+        import coach_ops
+        lines = [f"- [{cat}] {key.replace('_', ' ')}: {coach_ops.neutralize(val)}"
                  for cat, key, val, _ in rows]
         return ("ABOUT THE ATHLETE (long-term profile, remembered across "
                 "sessions — personalise your coaching with it; injuries "

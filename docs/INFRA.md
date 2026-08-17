@@ -24,7 +24,7 @@ cite the code; everything else is marked *(proposed)*.
 | Model lifecycle | **none** — no version, no seed/data record in the artifact, validation accuracy printed but nothing gates; `train_classifier` unconditionally overwrites the model | `pose_coach.py:541-562` |
 | Cloud | none (by design — see §2) | — |
 | Observability | none beyond stdout; the dashboard is a local page | `coach_dashboard.py` |
-| LLM coach lifecycle | ✅ prompt version + fingerprint, opt-in local JSONL trace (metrics only by default), deterministic reply graders, safety guardrail, 31-scenario eval set with a baseline gate (exit 0/1/2), manual `coach-eval.yml` running a real model on the runner — see [LLMOPS.md](LLMOPS.md) | `coach_ops.py`, `coach_eval.py`, `data/coach_evals.jsonl` |
+| LLM coach lifecycle | ✅ prompt version + fingerprint, opt-in local JSONL trace (metrics only by default), deterministic reply graders, safety guardrail, 31-scenario eval set with a baseline gate (exit 0/1/2), manual `coach-eval.yml` running a real model on the runner — see [LLMOPS.md](LLMOPS.md); STRIDE + LLM-agent threat model with P0 controls shipped in [SECURITY.md](SECURITY.md) | `coach_ops.py`, `coach_eval.py`, `data/coach_evals.jsonl` |
 
 ## 2. What deliberately does NOT transfer
 

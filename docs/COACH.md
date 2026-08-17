@@ -232,7 +232,7 @@ decode the raw numbers.
 
 ### Is the coach still behaving? (evals + trace)
 
-`python coach_eval.py` runs 31 scripted scenarios — safety, language,
+`python coach_eval.py` runs 34 scripted scenarios — safety, language, prompt injection,
 number grounding, app actions, calendar discipline, proactive events, style
 — against your local model and prints a per-category pass rate;
 `COACH_TRACE=coach_trace.jsonl` records latency and guardrail flags for a

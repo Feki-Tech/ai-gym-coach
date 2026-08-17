@@ -60,7 +60,9 @@ services:
   # can use it too (that is the recommended setup on Windows/macOS, where
   # containers cannot reach the camera or microphone).
   ollama:
-    image: ollama/ollama:latest
+    # Pinned (docs/SECURITY.md S6): a floating :latest is a supply-chain door
+    # into the process that reads the athlete's whole history. Bump on purpose.
+    image: ollama/ollama:0.32.13
     ports:
       - "11434:11434"
     environment:
