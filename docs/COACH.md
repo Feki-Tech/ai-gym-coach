@@ -223,9 +223,16 @@ Arabic, German or Chinese) a `[SAFETY NOTE]` is attached to the turn before
 the model answers, and the reply is checked afterwards. This is a
 guardrail, not medical advice — the coach is still not a doctor.
 
+Two more deterministic helpers work the same way: when you ask for a
+plan or program and your profile lists injuries, they are restated on
+that turn so the plan respects them; and the live-session block is
+prefixed with plain-language hints ("image is DARK", "only 60 % of the
+body in frame", "rep velocity down 25 %") so a small model doesn't have to
+decode the raw numbers.
+
 ### Is the coach still behaving? (evals + trace)
 
-`python coach_eval.py` runs 31 scripted scenarios — safety, language,
+`python coach_eval.py` runs 34 scripted scenarios — safety, language, prompt injection,
 number grounding, app actions, calendar discipline, proactive events, style
 — against your local model and prints a per-category pass rate;
 `COACH_TRACE=coach_trace.jsonl` records latency and guardrail flags for a
