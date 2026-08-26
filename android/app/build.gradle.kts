@@ -43,6 +43,9 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
     testImplementation("junit:junit:4.13.2")
+    // parity replay reads data/parity_fixtures.json (org.json is part of
+    // Android at runtime but absent from local JVM unit tests)
+    testImplementation("org.json:json:20240303")
 }
 
 // The pose model is fetched at build time (like the desktop's ensure_model),

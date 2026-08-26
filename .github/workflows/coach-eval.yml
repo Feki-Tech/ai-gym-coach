@@ -6,11 +6,14 @@ name: coach-eval
 # real prompt + real client, publish the per-category report, and — when a
 # baseline is committed — refuse regressions the same way ml gates do.
 #
-# Manual by design: a 3B model on a CPU runner takes ~10-20 min and the
-# result is a report to read, not a build to block. Selftests of the
-# harness itself run on every push in ci.yml (no LLM needed).
+# Runs nightly (and on demand): a 3B model on a CPU runner takes ~10-20
+# min and the result is a report to read, not a build to block — the
+# schedule catches prompt/model drift while ci.yml keeps gating the
+# deterministic harness selftests on every push.
 
 on:
+  schedule:
+    - cron: "20 3 * * *"        # nightly 03:20 UTC — catches prompt drift
   workflow_dispatch:
     inputs:
       model:
@@ -62,9 +65,9 @@ jobs:
           done
           curl -sf localhost:11434/v1/models
       - name: Pull model
-        run: ollama pull "${{ inputs.model }}"
+        run: ollama pull "${{ inputs.model || 'llama3.2:3b' }}"
       - name: Backend doctor
-        run: uv run python coach_ops.py --doctor --model "${{ inputs.model }}"
+        run: uv run python coach_ops.py --doctor --model "${{ inputs.model || 'llama3.2:3b' }}"
       - name: Run coach evals
         id: evals
         continue-on-error: true
@@ -72,13 +75,13 @@ jobs:
           set -o pipefail
           ONLY="${{ inputs.only }}"
           uv run python coach_eval.py \
-            --model "${{ inputs.model }}" \
-            --runs "${{ inputs.runs }}" \
+            --model "${{ inputs.model || 'llama3.2:3b' }}" \
+            --runs "${{ inputs.runs || '1' }}" \
             ${ONLY:+--only "$ONLY"} \
             --out coach_eval_report.json --md coach_eval_report.md \
             | tee coach_eval_stdout.txt
       - name: Gate against baseline
-        if: ${{ inputs.gate && hashFiles('data/coach_eval_baseline.json') != '' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.gate) && hashFiles('data/coach_eval_baseline.json') != '' }}
         run: |
           uv run python - <<'EOF'
           import json, sys

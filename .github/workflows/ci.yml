@@ -45,6 +45,10 @@ jobs:
         run: uv run python coach_calendar.py --selftest
       - name: Run sensor fusion selftests
         run: uv run python coach_sensors.py --selftest
+      - name: Cross-platform parity fixtures (Python side)
+        run: uv run python parity_fixtures.py --selftest
+      - name: Property-based invariants (seeded fuzz)
+        run: uv run python prop_tests.py
       - name: Run dashboard selftests
         run: uv run python coach_dashboard.py --selftest
 
@@ -80,6 +84,10 @@ jobs:
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_calendar.py --selftest
       - name: Sensor fusion selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_sensors.py --selftest
+      - name: Parity + property tests inside container
+        run: |
+          docker run --rm --entrypoint python ai-gym-coach:ci parity_fixtures.py --selftest
+          docker run --rm --entrypoint python ai-gym-coach:ci prop_tests.py
       - name: Dashboard selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_dashboard.py --selftest
       - name: Log in to GHCR
@@ -105,7 +113,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: CoachCore unit tests
+      - name: CoachCore unit tests (incl. parity replay)
+        env:
+          PARITY_FIXTURES: ${{ github.workspace }}/data/parity_fixtures.json
         run: swift test --package-path ios/CoachCore
       - name: Install XcodeGen
         run: brew install xcodegen

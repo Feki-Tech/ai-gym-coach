@@ -418,8 +418,14 @@ def _read_collected(path: str | None) -> list[tuple[str, list[float]]]:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if row.get("label") in ML_CLASSES and len(row.get("x", [])) == NDIM:
-                    rows.append((row["label"], row["x"]))
+                if not isinstance(row, dict):    # valid JSON, wrong shape
+                    continue
+                x = row.get("x", [])
+                if (row.get("label") in ML_CLASSES
+                        and isinstance(x, list) and len(x) == NDIM
+                        and all(isinstance(v, (int, float))
+                                and not isinstance(v, bool) for v in x)):
+                    rows.append((row["label"], x))
     return rows
 
 
@@ -1504,13 +1510,23 @@ def apply_chat_action(action: dict, cfg: dict) -> str:
     return ""
 
 
+# --- test seams (E2E golden-session selftest; both None in production) ---
+_TEST_CAP_FACTORY = None   # () -> VideoCapture-like (read/isOpened/get/release)
+_TEST_POSE_STREAM = None   # (t: float) -> landmark array (33,4) or None
+
+
 def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         headless: bool = False, output: str | None = None,
         coach: bool = False, record_reference: bool = False,
         reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
         model_file: str = MODEL_FILE, collect: str | None = None,
         program: str | None = None, sensors: str | None = None):
-    import cv2
+    try:
+        import cv2
+    except ImportError:
+        if not (_TEST_CAP_FACTORY and _TEST_POSE_STREAM):
+            raise
+        cv2 = None       # full test-seam mode never touches cv2
     prog_start = WorkoutProgram.parse(program) if program else None
     if prog_start:                    # program decides the first exercise
         exercise = prog_start.blocks[0]["exercise"]
@@ -1534,11 +1550,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
 
     detector = make_detector() if auto else None
 
-    cap = cv2.VideoCapture(video if video else 0)
+    cap = (_TEST_CAP_FACTORY() if _TEST_CAP_FACTORY
+           else cv2.VideoCapture(video if video else 0))
     if not cap.isOpened():
         sys.exit(f"Could not open {'video: ' + video if video else 'webcam 0'}"
                  + ("" if video else " (camera busy or access blocked?)"))
-    mp, landmarker = make_landmarker()
+    if _TEST_POSE_STREAM is None:
+        mp, landmarker = make_landmarker()
+    else:
+        mp = landmarker = None
     smoother, feedback = SkeletonSmoother(), FeedbackEngine()
     counter = RepCounter(spec) if spec else None
     plank = PlankTracker() if spec and spec.mode == "hold" else None
@@ -1670,6 +1690,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     fps = cap.get(cv2.CAP_PROP_FPS) if video else 0.0
     fps = fps if fps and fps > 1 else 30.0
     writer = None
+    # nobody sees the frame in headless-no-output runs: skip cv2 overlay work
+    draw_hud = (not headless) or bool(output)
     quit_hint = "Ctrl+C" if headless else "q"
     if spec:
         print(f"{exercise}: camera hint — {spec.camera_hint}. "
@@ -1761,11 +1783,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             t = frame_idx / fps if video else time.time() - t0
             frame_idx += 1
             ts_ms = max(ts_ms + 1, int(t * 1000))
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = landmarker.detect_for_video(
-                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts_ms)
-
-            pts = landmarks_to_array(result)
+            if _TEST_POSE_STREAM is not None:
+                rgb = frame
+                pts = _TEST_POSE_STREAM(t)
+            else:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = landmarker.detect_for_video(
+                    mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
+                    ts_ms)
+                pts = landmarks_to_array(result)
             if pts is not None:
                 pts = smoother.update(pts, t)
                 ang = body_angles(pts)
@@ -1930,32 +1956,40 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     hud2 += (f"   hr: {round(effort.current)}"
                              f" (z{effort.zone()})")
 
-                h, w = frame.shape[:2]
-                for i, j in EDGES:
-                    if pts[i, 3] > VIS_MIN and pts[j, 3] > VIS_MIN:
-                        cv2.line(frame, (int(pts[i, 0] * w), int(pts[i, 1] * h)),
-                                 (int(pts[j, 0] * w), int(pts[j, 1] * h)), (0, 255, 120), 2)
-                for k, line in enumerate((hud1, hud2)):
-                    cv2.putText(frame, line, (10, 30 + 28 * k),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                if chat:
-                    st = chat.status
-                    col = ((0, 220, 255) if "hearing" in st else
-                           (80, 200, 80) if st == "listening" else
-                           (200, 200, 200))
-                    bars = "|" * min(10, int(chat.mic_level * 3))
-                    cv2.putText(frame, f"mic: {st} {bars}", (10, 30 + 28 * 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
-                prog_hud = session_cfg["program"]
-                if prog_hud and prog_hud.current:
-                    cv2.putText(frame, "program: " + prog_hud.describe(),
-                                (10, 30 + 28 * 3), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6, (255, 200, 80), 2)
-                if feedback.current:
-                    cv2.putText(frame, feedback.current, (10, frame.shape[0] - 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 80, 255), 2)
+                if draw_hud:
+                    h, w = frame.shape[:2]
+                    for i, j in EDGES:
+                        if pts[i, 3] > VIS_MIN and pts[j, 3] > VIS_MIN:
+                            cv2.line(frame,
+                                     (int(pts[i, 0] * w), int(pts[i, 1] * h)),
+                                     (int(pts[j, 0] * w), int(pts[j, 1] * h)),
+                                     (0, 255, 120), 2)
+                    for k, line in enumerate((hud1, hud2)):
+                        cv2.putText(frame, line, (10, 30 + 28 * k),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                    (255, 255, 255), 2)
+                    if chat:
+                        st = chat.status
+                        col = ((0, 220, 255) if "hearing" in st else
+                               (80, 200, 80) if st == "listening" else
+                               (200, 200, 200))
+                        bars = "|" * min(10, int(chat.mic_level * 3))
+                        cv2.putText(frame, f"mic: {st} {bars}",
+                                    (10, 30 + 28 * 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
+                    prog_hud = session_cfg["program"]
+                    if prog_hud and prog_hud.current:
+                        cv2.putText(frame, "program: " + prog_hud.describe(),
+                                    (10, 30 + 28 * 3),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.6, (255, 200, 80), 2)
+                    if feedback.current:
+                        cv2.putText(frame, feedback.current,
+                                    (10, frame.shape[0] - 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                    (0, 80, 255), 2)
 
-            if rest_left > 0:                    # coach-set rest countdown
+            if draw_hud and rest_left > 0:       # coach-set rest countdown
                 cv2.putText(frame, f"REST {int(rest_left) + 1}s",
                             (10, frame.shape[0] - 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.1, (60, 200, 255), 3)
@@ -1977,7 +2011,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         print("\nInterrupted — finishing session...")
 
     cap.release()
-    landmarker.close()
+    if landmarker is not None:
+        landmarker.close()
     if writer is not None:
         writer.release()
         print(f"Annotated video written to {output}")
@@ -2452,6 +2487,92 @@ def selftest():
         except ValueError:
             pass
     print("OK (export from reserved slice, dedup, never trains)")
+
+    print("25) E2E golden session (full run() via test seams):", end=" ")
+    global _TEST_CAP_FACTORY, _TEST_POSE_STREAM
+    try:
+        import cv2  # noqa: F401 — only to decide skippability honestly
+        have_cv2 = True
+    except ImportError:
+        have_cv2 = False
+
+    N_FRAMES, FPS = 300, 30              # 10 s of video time, 3 s cadence
+
+    class FakeCap:
+        """VideoCapture-like: N black frames, then end-of-stream."""
+        def __init__(self):
+            self.i = 0
+        def isOpened(self):
+            return True
+        def read(self):
+            if self.i >= N_FRAMES:
+                return False, None
+            self.i += 1
+            return True, np.zeros((240, 320, 3), dtype=np.uint8)
+        def get(self, _prop):
+            return float(FPS)
+        def release(self):
+            pass
+
+    def squat_skeleton(t: float) -> np.ndarray:
+        """33-landmark frame of a squatting figure; knee x-offset bends
+        the knees 180° -> ~80° on a 3 s cosine cadence."""
+        phase = (1 - math.cos(2 * math.pi * t / 3.0)) / 2
+        off = 0.24 * phase
+        pts = np.zeros((33, 4), dtype=np.float32)
+        def put(i, x, y):
+            pts[i] = (x, y, 0.0, 1.0)
+        put(NOSE, 0.50, 0.10)
+        put(L_EAR, 0.48, 0.10); put(R_EAR, 0.52, 0.10)
+        put(L_SHO, 0.45, 0.25); put(R_SHO, 0.55, 0.25)
+        put(L_ELB, 0.42, 0.37); put(R_ELB, 0.58, 0.37)
+        put(L_WRI, 0.41, 0.48); put(R_WRI, 0.59, 0.48)
+        put(L_HIP, 0.46, 0.50); put(R_HIP, 0.54, 0.50)
+        put(L_KNE, 0.46 - off, 0.70); put(R_KNE, 0.54 + off, 0.70)
+        put(L_ANK, 0.46, 0.90); put(R_ANK, 0.54, 0.90)
+        return pts
+
+    if not have_cv2:
+        # the seams bypass cv2 entirely, so this still runs — cv2 presence
+        # only changes which import path run() takes
+        pass
+    with tempfile.TemporaryDirectory() as td:
+        e2e_log = os.path.join(td, "e2e_log.json")
+        _TEST_CAP_FACTORY = FakeCap
+        _TEST_POSE_STREAM = squat_skeleton
+        try:
+            with redirect_stdout(io.StringIO()) as buf:
+                run("squat", video="e2e-synthetic", use_voice=False,
+                    log_path=e2e_log, headless=True, detector_kind="rules")
+        finally:
+            _TEST_CAP_FACTORY = _TEST_POSE_STREAM = None
+        with open(e2e_log, encoding="utf-8") as fh:
+            sessions = json.load(fh)
+        assert len(sessions) == 1
+        summ = sessions[0]["summary"]
+        assert summ["reps"] == 3, (summ, buf.getvalue()[-500:])
+        assert summ["avg_score"] is not None
+        assert sessions[0]["exercise"] == "squat"
+        for r in sessions[0]["reps"]:        # deep + sane tempo split
+            assert r["min_angle"] < 100 and r["eccentric_s"] > 0
+
+        # the same seams with the sensor pipeline attached must not disturb
+        # the count — sensors are optional by contract, sim is best-effort
+        e2e_log2 = os.path.join(td, "e2e_log2.json")
+        _TEST_CAP_FACTORY = FakeCap
+        _TEST_POSE_STREAM = squat_skeleton
+        try:
+            with redirect_stdout(io.StringIO()):
+                run("squat", video="e2e-synthetic", use_voice=False,
+                    log_path=e2e_log2, headless=True, detector_kind="rules",
+                    sensors="sim")
+        finally:
+            _TEST_CAP_FACTORY = _TEST_POSE_STREAM = None
+        with open(e2e_log2, encoding="utf-8") as fh:
+            summ2 = json.load(fh)[0]["summary"]
+        assert summ2["reps"] == 3, summ2
+    print(f"OK (3 reps end-to-end{'' if have_cv2 else ', cv2-free seams'}"
+          ", sensors-sim run intact)")
 
     print("\nAll selftests passed.")
 

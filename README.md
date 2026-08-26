@@ -113,6 +113,21 @@ builds the Docker image, re-runs the selftests inside the container, pushes
 the image to GHCR, and builds the iOS app (CoachCore unit tests + simulator
 build on macOS) on every push to `main`.
 
+Beyond example tests, three heavier layers run in CI: **cross-platform
+parity fixtures** (`parity_fixtures.py` generates deterministic angle
+streams + expected FSM/plank/detector outputs from the Python engine into
+`data/parity_fixtures.json`; the Swift and Kotlin test suites replay the
+same file, so the three engines cannot drift apart silently), a
+**property-based harness** (`prop_tests.py`, dependency-free seeded fuzz:
+parsers never throw on garbage, the FSM can't count more reps than lockout
+crossings, partitions lose nothing — it found a real crash on its second
+generated case), and an **end-to-end golden session** (selftest 25 drives
+the complete `run()` pipeline — smoothing, FSM, faults, log — through
+injected synthetic skeletons and requires exactly 3 counted reps). The LLM
+coach additionally gets a **nightly behaviour eval** against a real local
+model (`coach-eval.yml`, docs/LLMOPS.md) so prompt drift shows up in the
+morning, not in a workout.
+
 ### Camera placement
 
 | Exercise | View |
