@@ -6,6 +6,7 @@ venv
 docs
 data
 !data/coach_evals.jsonl
+!data/parity_fixtures.json
 README.md
 docker-compose.yml
 Dockerfile
