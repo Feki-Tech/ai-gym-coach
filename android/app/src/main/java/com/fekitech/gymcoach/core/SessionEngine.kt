@@ -25,7 +25,7 @@ data class FrameOutput(
     val repEvent: RepEvent?,
 )
 
-class SessionEngine(exercise: String) {
+class SessionEngine(exercise: String, mlModel: TinyMlp? = null) {
     var exercise: String? = null
         private set
     private var spec: ExerciseSpec? = null
@@ -40,7 +40,10 @@ class SessionEngine(exercise: String) {
 
     init {
         if (exercise == "auto") {
-            detector = AutoDetector()
+            // trained classifier when a model is provided — the same gated,
+            // versioned MLP as the desktop; rule-based fallback otherwise
+            detector = if (mlModel != null) MlDetector(mlModel)
+                       else AutoDetector()
             hud.detecting = true
         } else {
             detector = null

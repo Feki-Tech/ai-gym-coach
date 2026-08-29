@@ -41,7 +41,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Unit tests (core port)
+      - name: Unit tests (core port, incl. parity replay)
+        env:
+          PARITY_FIXTURES: ${{ github.workspace }}/data/parity_fixtures.json
         run: |
           chmod +x gradlew
           ./gradlew test

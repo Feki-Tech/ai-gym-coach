@@ -38,11 +38,14 @@ public final class SessionEngine {
     public private(set) var hud = HUDState()
 
     /// exercise: name from `specs`, or "auto" to detect from movement.
-    public init(exercise: String) {
+    /// exercise: name from `specs`, or "auto" to detect from movement.
+    /// model: optional trained classifier (TinyMLP.load) — auto-detect then
+    /// uses the same gated, versioned MLP as the desktop instead of rules.
+    public init(exercise: String, model: TinyMLP? = nil) {
         if exercise == "auto" {
             self.exercise = nil
             self.spec = nil
-            self.detector = AutoDetector()
+            self.detector = model.map { MLDetector(model: $0) } ?? AutoDetector()
             hud.detecting = true
         } else {
             self.exercise = exercise
