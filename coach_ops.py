@@ -89,8 +89,14 @@ class Tracer:
             row[k] = v
         try:
             line = json.dumps(row, ensure_ascii=False, default=str)
-            with self._lock, open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            with self._lock:
+                # 0600 at creation (POSIX; no-op on Windows): the trace can
+                # hold health conversations when COACH_TRACE_TEXT=1 —
+                # SECURITY.md S5
+                fd = os.open(self.path,
+                             os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
             self.written += 1
         except Exception:
             pass
@@ -526,6 +532,41 @@ def format_report(summary: dict) -> str:
     return "\n".join(lines)
 
 
+# -------------------------------------------------------------------- wipe
+def personal_files() -> list[str]:
+    """The local files that hold personal data (SECURITY.md §3.2): profile,
+    calendar token, trace. Paths honour the same env vars the app uses."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [
+        os.environ.get("COACH_PROFILE_DB", "coach_profile.db"),
+        os.environ.get("GOOGLE_TOKEN_FILE",
+                       os.path.join(here, "google_token.json")),
+        os.environ.get("COACH_TRACE", "coach_trace.jsonl"),
+    ]
+
+
+def wipe(paths: list[str] | None = None, do_it: bool = False) -> int:
+    """Delete the personal-data files in one go (shared machine, handing the
+    laptop back...). Dry-run by default; pass do_it=True (CLI: --yes) to
+    actually delete. Returns the number of files removed."""
+    removed = 0
+    for p in paths if paths is not None else personal_files():
+        if not p or not os.path.exists(p):
+            continue
+        if do_it:
+            try:
+                os.remove(p)
+                removed += 1
+                print(f"deleted  {p}")
+            except OSError as e:
+                print(f"FAILED   {p}: {e}")
+        else:
+            print(f"would delete  {p}")
+    if not do_it:
+        print("(dry run — add --yes to delete)")
+    return removed
+
+
 # ------------------------------------------------------------------ doctor
 def doctor(base_url: str, model: str, api_key: str = "ollama") -> int:
     """Check the backend is up, the model exists, and time a cold ping."""
@@ -607,6 +648,26 @@ def selftest():
         bad = Tracer(os.path.join(td, "no_dir", "x", "t.jsonl"))
         bad.record("x", y=1)                       # unwritable → silent
         assert bad.written == 0
+        if os.name == "posix":                     # S5: private at creation
+            assert os.stat(p).st_mode & 0o777 == 0o600
+    print("ok")
+
+    print("2b) wipe deletes personal files, dry-run by default:", end=" ")
+    import contextlib
+    import io
+    with tempfile.TemporaryDirectory() as td:
+        files = [os.path.join(td, n) for n in
+                 ("p.db", "google_token.json", "trace.jsonl")]
+        for f in files[:2]:                        # trace intentionally absent
+            open(f, "w").write("x")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            n = wipe(files)                        # dry run
+        assert n == 0 and all(os.path.exists(f) for f in files[:2])
+        assert "dry run" in out.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()):
+            n = wipe(files, do_it=True)
+        assert n == 2 and not any(os.path.exists(f) for f in files)
+        assert len(personal_files()) == 3
     print("ok")
 
     print("3) script detection:", end=" ")
@@ -780,10 +841,17 @@ if __name__ == "__main__":
                                            "http://localhost:11434/v1"))
     ap.add_argument("--model",
                     default=os.environ.get("COACH_LLM_MODEL", "llama3.2:3b"))
+    ap.add_argument("--wipe", action="store_true",
+                    help="delete the personal-data files (profile, calendar "
+                         "token, trace); dry-run unless --yes")
+    ap.add_argument("--yes", action="store_true",
+                    help="with --wipe: actually delete")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         selftest()
+    elif args.wipe:
+        wipe(do_it=args.yes)
     elif args.report:
         summ = summarize_trace(load_trace(args.report))
         print(json.dumps(summ, indent=2) if args.json else format_report(summ))

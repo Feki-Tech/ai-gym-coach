@@ -88,7 +88,11 @@ public final class TinyMLP {
     }
 
     /// Load a pose_coach.py --export-model file. Returns nil on any
-    /// malformed input — a broken model must never crash a workout.
+    /// malformed input — a broken model must never crash a workout. The
+    /// file is untrusted (dropped into the app's documents), so beyond the
+    /// JSON types the SHAPES are checked too: mismatched dimensions, a
+    /// zero sd or a non-finite weight would otherwise crash or poison the
+    /// first predict() mid-workout. SECURITY.md S14.
     public static func load(json data: Data) -> TinyMLP? {
         guard let root = (try? JSONSerialization.jsonObject(with: data))
                 as? [String: Any],
@@ -97,7 +101,19 @@ public final class TinyMLP {
               let w2 = matrix(root["W2"]), let b2 = vector(root["b2"]),
               let mu = vector(root["mu"]), let sd = vector(root["sd"])
         else { return nil }
+        let ndim = mu.count, hidden = b1.count, nc = classes.count
+        func finite(_ a: [Double]) -> Bool { a.allSatisfy { $0.isFinite } }
+        guard ndim > 0, hidden > 0, nc > 0,
+              sd.count == ndim, w1.count == ndim,
+              w1.allSatisfy({ $0.count == hidden }),
+              w2.count == hidden, w2.allSatisfy({ $0.count == nc }),
+              b2.count == nc,
+              finite(b1), finite(b2), finite(mu), finite(sd),
+              w1.allSatisfy(finite), w2.allSatisfy(finite),
+              sd.allSatisfy({ $0 != 0 })
+        else { return nil }
         let minProba = (root["min_proba"] as? NSNumber)?.doubleValue ?? 0.75
+        guard minProba.isFinite else { return nil }
         let version = ((root["manifest"] as? [String: Any])?["model_version"]
                        as? String) ?? "unknown"
         return TinyMLP(classes: classes, minProba: minProba,
@@ -158,7 +174,9 @@ public final class MLDetector: AutoDetector {
     }
 
     override func classify() -> String? {
-        let p = model.predict(WindowFeaturesML.of(buf.map { $0.1 }))
+        let x = WindowFeaturesML.of(buf.map { $0.1 })
+        guard x.count == model.mu.count else { return nil }   // foreign dims
+        let p = model.predict(x)
         guard let maxP = p.max(), let ci = p.firstIndex(of: maxP),
               maxP >= model.minProba else { return nil }
         return model.classes[ci]
