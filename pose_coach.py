@@ -598,6 +598,33 @@ class TinyMLP:
         return m
 
 
+def export_model_json(model: "TinyMLP", path: str):
+    """Portable weights for the mobile engines — the same gated, versioned
+    classifier on every platform (roadmap item: unify detection). Plain
+    JSON so Swift/Kotlin load it without numpy: python pose_coach.py
+    --export-model classifier.json, then drop the file into the app
+    (android/README.md, docs/IOS.md)."""
+    data = {
+        "schema": 1,
+        "classes": list(model.classes),
+        "feat_keys": list(FEAT_KEYS),
+        "min_proba": MLDetector.MIN_PROBA,
+        "W1": [[float(v) for v in row] for row in model.W1],
+        "b1": [float(v) for v in model.b1],
+        "W2": [[float(v) for v in row] for row in model.W2],
+        "b2": [float(v) for v in model.b2],
+        "mu": [float(v) for v in model.mu],
+        "sd": [float(v) for v in model.sd],
+        "manifest": model.manifest,
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+    print(f"Exported {model.manifest.get('model_version', 'unknown')} -> "
+          f"{path} ({os.path.getsize(path)} bytes)")
+
+
 def manifest_path(model_path: str) -> str:
     """classifier.npz -> classifier.manifest.json (next to the weights)."""
     return os.path.splitext(model_path)[0] + ".manifest.json"
@@ -2574,6 +2601,46 @@ def selftest():
     print(f"OK (3 reps end-to-end{'' if have_cv2 else ', cv2-free seams'}"
           ", sensors-sim run intact)")
 
+    print("26) portable model export (JSON roundtrip, pure forward):", end=" ")
+    with tempfile.TemporaryDirectory() as td:
+        mp_ = os.path.join(td, "clf.npz")
+        with redirect_stdout(io.StringIO()):
+            train_classifier(mp_, samples_per_class=40, epochs=200,
+                             eval_file=None)
+        m = TinyMLP.load(mp_)
+        jp = os.path.join(td, "clf.json")
+        with redirect_stdout(io.StringIO()):
+            export_model_json(m, jp)
+        with open(jp, encoding="utf-8") as fh:
+            d = json.load(fh)
+        assert d["schema"] == 1 and d["classes"] == list(ML_CLASSES)
+        assert d["feat_keys"] == list(FEAT_KEYS)
+        assert d["manifest"]["model_version"] == m.manifest["model_version"]
+        assert len(d["W1"]) == NDIM and len(d["W1"][0]) == len(d["b1"])
+
+        def pure_forward(model: dict, x: list[float]) -> list[float]:
+            """Reference implementation for the Swift/Kotlin ports — no
+            numpy, exactly the math the mobile engines must reproduce."""
+            xn = [(xi - mu) / sd for xi, mu, sd in
+                  zip(x, model["mu"], model["sd"])]
+            h = [max(0.0, sum(xi * wij for xi, wij in zip(xn, col)) + b)
+                 for col, b in zip(zip(*model["W1"]), model["b1"])]
+            z = [sum(hi * wij for hi, wij in zip(h, col)) + b
+                 for col, b in zip(zip(*model["W2"]), model["b2"])]
+            zmax = max(z)
+            e = [math.exp(v - zmax) for v in z]
+            tot = sum(e)
+            return [v / tot for v in e]
+
+        rng = np.random.default_rng(6)
+        for ex in ("squat", "pushup", "curl", "plank"):
+            x = window_features(synth_frames(ex, rng))
+            p_np = m.predict_proba(x)[0]
+            p_py = pure_forward(d, [float(v) for v in x])
+            assert max(abs(a - b) for a, b in zip(p_np, p_py)) < 1e-9, ex
+            assert abs(sum(p_py) - 1.0) < 1e-9
+    print("OK (numpy and pure-python forward agree to 1e-9)")
+
     print("\nAll selftests passed.")
 
 
@@ -2618,6 +2685,9 @@ if __name__ == "__main__":
                          "rules = heuristics, auto = ml when weights exist")
     ap.add_argument("--model-file", default=MODEL_FILE,
                     help=f"classifier weights file (default {MODEL_FILE})")
+    ap.add_argument("--export-model", metavar="FILE.json",
+                    help="write the trained classifier (--model-file) as "
+                         "portable JSON for the iOS/Android engines and exit")
     ap.add_argument("--collect", metavar="JSONL",
                     help="with --exercise: append labeled feature windows "
                          "from this session; with --train-classifier: also "
@@ -2658,6 +2728,11 @@ if __name__ == "__main__":
         print_stats(args.log_file)
     elif args.collect_report:
         collect_report(args.collect)
+    elif args.export_model:
+        if not os.path.exists(args.model_file):
+            sys.exit(f"no trained model at {args.model_file} — run "
+                     "--train-classifier first")
+        export_model_json(TinyMLP.load(args.model_file), args.export_model)
     elif args.export_eval:
         if not args.collect:
             sys.exit("--export-eval needs --collect <file> as the source")

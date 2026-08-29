@@ -49,8 +49,22 @@ indistinguishable from a push-up in skeleton view), rep counting with
 depth/tempo checks, per-exercise form faults with spoken cues, plank hold
 timer, velocity-loss fatigue warning, per-session JSON log.
 
-Next: the trained MLP classifier (the manifest/gated `classifier.npz`) as
-auto-detect backend — the same ~1.5k-parameter model the desktop gates; the
-rule-based detector here is the fallback tier, exactly like the desktop
-before `--train-classifier`. Also: localization (the core keeps all strings
-in `FormRules.kt` for that reason), history UI, guided programs.
+**The trained classifier runs here too.** Auto-detect uses the same gated,
+versioned ~1.5k-parameter MLP the desktop trains — export it once and drop
+it into the app:
+
+```bash
+python pose_coach.py --train-classifier                 # desktop, gated
+python pose_coach.py --export-model classifier.json     # portable weights
+adb push classifier.json /data/data/com.fekitech.gymcoach/files/
+```
+
+On the next launch auto-detect switches from the rule tier to the MLP
+(`MlDetector`, same sliding window and 3-agreeing-votes lock-in); without
+the file the rules keep working, exactly like the desktop before
+`--train-classifier`. Inference parity with Python is pinned by the
+`window_feature`/`mlp` sections of `data/parity_fixtures.json`.
+
+Next: localization (the core keeps all strings in `FormRules.kt` for that
+reason), history UI, guided programs, phone-IMU sensor fusion
+(docs/SENSORS.md).

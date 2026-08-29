@@ -38,7 +38,7 @@ fun frameFeatures(ang: BodyAngles, pts: Skeleton): FrameFeatures {
  * Locks after 3 agreeing votes. Bench press is NOT detectable from the
  * skeleton alone (looks like a push-up) — select it manually.
  */
-class AutoDetector {
+open class AutoDetector {
     companion object {
         const val WINDOW_S = 2.0
         const val VOTE_EVERY_S = 0.5
@@ -48,6 +48,9 @@ class AutoDetector {
     private val buf = ArrayDeque<Pair<Double, FrameFeatures>>()
     private val votes = ArrayDeque<String?>()
     private var nextVoteT = WINDOW_S
+
+    /** Current sliding window, oldest first — for subclass classifiers. */
+    protected fun windowFrames(): List<FrameFeatures> = buf.map { it.second }
 
     fun update(feat: FrameFeatures, t: Double): String? {
         buf.addLast(t to feat)
@@ -67,7 +70,7 @@ class AutoDetector {
         return null
     }
 
-    internal fun classify(): String? {
+    internal open fun classify(): String? {
         val f = buf.map { it.second }
         fun rom(key: (FrameFeatures) -> Double): Double {
             val vals = f.map(key)

@@ -30,6 +30,15 @@ final class ParityTests: XCTestCase {
             detect: root["detect_cases"] as! [[String: Any]])
     }
 
+    private func loadFixturesRoot() throws -> [String: Any] {
+        guard let path = ProcessInfo.processInfo.environment["PARITY_FIXTURES"],
+              FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("PARITY_FIXTURES not set — parity replay runs in CI")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    }
+
     func testRepCounterParity() throws {
         let fx = try loadFixtures()
         for c in fx.fsm {
@@ -90,6 +99,63 @@ final class ParityTests: XCTestCase {
             XCTAssertEqual(plank.best, (expected["best_s"] as! NSNumber).doubleValue,
                            accuracy: fx.tolerance, "\(name) best")
             XCTAssertEqual(cues, expected["cues"] as! Int, "\(name) cues")
+        }
+    }
+
+    private func frame(of f: [String: Any]) -> FrameFeatures {
+        FrameFeatures(
+            trunk: (f["trunk"] as! NSNumber).doubleValue,
+            knee: (f["knee"] as! NSNumber).doubleValue,
+            elbow: (f["elbow"] as! NSNumber).doubleValue,
+            hip: (f["hip"] as! NSNumber).doubleValue,
+            shoY: (f["sho_y"] as! NSNumber).doubleValue,
+            wriY: (f["wri_y"] as! NSNumber).doubleValue,
+            torso: (f["torso"] as! NSNumber).doubleValue,
+            overhead: f["overhead"] as! Bool,
+            kneeSplit: (f["knee_split"] as! NSNumber).doubleValue)
+    }
+
+    func testWindowFeaturesParity() throws {
+        let fx = try loadFixturesRoot()
+        for c in fx["window_feature_cases"] as! [[String: Any]] {
+            let name = c["name"] as! String
+            let frames = (c["frames"] as! [[String: Any]]).map { frame(of: $0) }
+            let x = WindowFeaturesML.of(frames)
+            let exp = ((c["expected"] as! [String: Any])["x"] as! [Any])
+                .map { ($0 as! NSNumber).doubleValue }
+            XCTAssertEqual(x.count, exp.count, name)
+            for (i, (a, b)) in zip(x, exp).enumerated() {
+                XCTAssertEqual(a, b, accuracy: 1e-4, "\(name) dim \(i)")
+            }
+        }
+    }
+
+    func testMlpForwardParity() throws {
+        let fx = try loadFixturesRoot()
+        let mlp = fx["mlp"] as! [String: Any]
+        let modelData = try JSONSerialization.data(
+            withJSONObject: mlp["model"] as! [String: Any])
+        guard let model = TinyMLP.load(json: modelData) else {
+            XCTFail("fixture model failed to load")
+            return
+        }
+        for c in mlp["cases"] as! [[String: Any]] {
+            let name = c["name"] as! String
+            let x = (c["x"] as! [Any]).map { ($0 as! NSNumber).doubleValue }
+            let p = model.predict(x)
+            let expected = c["expected"] as! [String: Any]
+            let probs = (expected["probs"] as! [Any])
+                .map { ($0 as! NSNumber).doubleValue }
+            XCTAssertEqual(p.count, probs.count, name)
+            for (i, (a, b)) in zip(p, probs).enumerated() {
+                XCTAssertEqual(a, b, accuracy: 1e-4, "\(name) prob \(i)")
+            }
+            let ci = p.firstIndex(of: p.max()!)!
+            XCTAssertEqual(ci, expected["argmax"] as! Int, "\(name) argmax")
+            XCTAssertEqual(model.classes[ci], expected["label"] as! String,
+                           name)
+            XCTAssertEqual(p[ci] >= model.minProba,
+                           expected["confident"] as! Bool, "\(name) confident")
         }
     }
 

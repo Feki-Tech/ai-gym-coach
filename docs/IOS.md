@@ -77,6 +77,10 @@ VNDetectHumanBodyPoseRequest        ← Apple Vision, Neural Engine
 CoachCore.SessionEngine
       ├─ SkeletonSmoother (One Euro + visibility hold)
       ├─ AutoDetector ("Auto" mode) / RepCounter FSM / PlankTracker
+      │    └─ MLDetector: the desktop's gated TinyMLP via
+      │       `TinyMLP.load(url:)` + `SessionEngine(exercise:model:)` —
+      │       export with `pose_coach.py --export-model classifier.json`,
+      │       ship the file in the app's Documents; rules stay the fallback
       ├─ live + per-rep form rules → scores, faults
       ├─ FatigueMonitor (velocity loss)
       └─ SessionBuilder → workout_log.json (Documents/)

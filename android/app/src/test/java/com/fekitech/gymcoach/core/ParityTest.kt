@@ -90,6 +90,59 @@ class ParityTest {
         }
     }
 
+    private fun frameOf(f: JSONObject) = FrameFeatures(
+        trunk = f.getDouble("trunk"), knee = f.getDouble("knee"),
+        elbow = f.getDouble("elbow"), hip = f.getDouble("hip"),
+        shoY = f.getDouble("sho_y"), wriY = f.getDouble("wri_y"),
+        torso = f.getDouble("torso"), overhead = f.getBoolean("overhead"),
+        kneeSplit = f.getDouble("knee_split"))
+
+    @Test
+    fun windowFeaturesParity() {
+        val root = fixtures()
+        val cases = root.getJSONArray("window_feature_cases")
+        for (ci in 0 until cases.length()) {
+            val c = cases.getJSONObject(ci)
+            val name = c.getString("name")
+            val frames = c.getJSONArray("frames")
+            val x = WindowFeatures.of(
+                (0 until frames.length()).map { frameOf(frames.getJSONObject(it)) })
+            val exp = c.getJSONObject("expected").getJSONArray("x")
+            assertEquals(name, exp.length(), x.size)
+            for (i in 0 until exp.length()) {
+                assertEquals("$name dim $i", exp.getDouble(i), x[i], tolerance)
+            }
+        }
+    }
+
+    @Test
+    fun mlpForwardParity() {
+        val root = fixtures()
+        val mlp = root.getJSONObject("mlp")
+        val model = tinyMlpFromJson(mlp.getJSONObject("model").toString())
+        val cases = mlp.getJSONArray("cases")
+        for (ci in 0 until cases.length()) {
+            val c = cases.getJSONObject(ci)
+            val name = c.getString("name")
+            val xa = c.getJSONArray("x")
+            val x = DoubleArray(xa.length()) { xa.getDouble(it) }
+            val p = model.predict(x)
+            val expected = c.getJSONObject("expected")
+            val probs = expected.getJSONArray("probs")
+            assertEquals(name, probs.length(), p.size)
+            for (i in 0 until probs.length()) {
+                assertEquals("$name prob $i", probs.getDouble(i), p[i], tolerance)
+            }
+            var ci2 = 0
+            for (i in p.indices) if (p[i] > p[ci2]) ci2 = i
+            assertEquals("$name argmax", expected.getInt("argmax"), ci2)
+            assertEquals("$name label", expected.getString("label"),
+                         model.classes[ci2])
+            assertEquals("$name confident", expected.getBoolean("confident"),
+                         p[ci2] >= model.minProba)
+        }
+    }
+
     @Test
     fun autoDetectParity() {
         val root = fixtures()
