@@ -35,7 +35,12 @@ import math
 import os
 import sys
 
-from pose_coach import SPECS, AutoDetector, PlankTracker, RepCounter
+import io
+from contextlib import redirect_stdout
+
+from pose_coach import (FEAT_KEYS, NDIM, SPECS, AutoDetector, PlankTracker,
+                        RepCounter, TinyMLP, export_model_json, synth_frames,
+                        train_classifier, window_features)
 
 FIXTURE_FILE = os.path.join("data", "parity_fixtures.json")
 SCHEMA = 1
@@ -179,6 +184,89 @@ def _run_detect(frames: list[dict], fps: int) -> dict:
     return {"exercise": detected, "at_frame": at_frame}
 
 
+# ----------------------------------------------- window features + MLP
+def _wf_inputs() -> list[dict]:
+    fps = 30
+
+    def stream(seconds, fn):
+        return [fn(i / fps) for i in range(max(int(seconds * fps), 1))]
+
+    return [
+        # squat-like knee/hip wave — exercises mean/std/min/max + rom travel
+        {"name": "wf_squat_wave",
+         "frames": stream(2.0, lambda t: _feat(
+             trunk=18 + 6 * math.sin(2 * math.pi * t / 1.5),
+             knee=130 + 40 * math.cos(2 * math.pi * t / 3.0),
+             hip=132 + 38 * math.cos(2 * math.pi * t / 3.0),
+             sho_y=0.30 + 0.05 * math.cos(2 * math.pi * t / 3.0),
+             wri_y=0.52 + 0.04 * math.cos(2 * math.pi * t / 3.0)))},
+        # overhead press — the overhead bool must enter as exactly 0/1
+        {"name": "wf_overhead_press",
+         "frames": stream(1.5, lambda t: _feat(
+             elbow=130 + 35 * math.cos(2 * math.pi * t / 2.0),
+             wri_y=0.15 + 0.10 * math.cos(2 * math.pi * t / 2.0),
+             sho_y=0.30, overhead=(math.cos(2 * math.pi * t / 2.0) < 0.5)))},
+        # single frame: std must be exactly 0, rom 0
+        {"name": "wf_single_frame", "frames": [_feat(knee=123.4567)]},
+    ]
+
+
+def _run_wf(frames: list[dict]) -> dict:
+    x = window_features(frames)
+    return {"x": [round(float(v), 6) for v in x]}
+
+
+def _mlp_forward(model: dict, x: list[float]) -> list[float]:
+    """Pure-python forward pass — the exact math the Swift/Kotlin ports
+    must reproduce (verified against numpy in pose_coach selftest 26)."""
+    xn = [(xi - mu) / sd for xi, mu, sd in zip(x, model["mu"], model["sd"])]
+    h = [max(0.0, sum(xi * w for xi, w in zip(xn, col)) + b)
+         for col, b in zip(zip(*model["W1"]), model["b1"])]
+    z = [sum(hi * w for hi, w in zip(h, col)) + b
+         for col, b in zip(zip(*model["W2"]), model["b2"])]
+    zmax = max(z)
+    e = [math.exp(v - zmax) for v in z]
+    tot = sum(e)
+    return [v / tot for v in e]
+
+
+def _mlp_model_and_windows() -> tuple[dict, list[dict]]:
+    """A small deterministically-trained model (weights STORED in the
+    fixture — verify() never retrains) + one feature window per class."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        mp = os.path.join(td, "clf.npz")
+        with redirect_stdout(io.StringIO()):
+            train_classifier(mp, samples_per_class=25, epochs=120, seed=0,
+                             eval_file=None)
+            model = TinyMLP.load(mp)
+            jp = os.path.join(td, "clf.json")
+            export_model_json(model, jp)
+        with open(jp, encoding="utf-8") as fh:
+            d = json.load(fh)
+    rnd = lambda m: [[round(v, 6) for v in row] for row in m]
+    stored = {"classes": d["classes"], "min_proba": d["min_proba"],
+              "W1": rnd(d["W1"]), "b1": [round(v, 6) for v in d["b1"]],
+              "W2": rnd(d["W2"]), "b2": [round(v, 6) for v in d["b2"]],
+              "mu": [round(v, 6) for v in d["mu"]],
+              "sd": [round(v, 6) for v in d["sd"]]}
+    import numpy as np
+    rng = np.random.default_rng(5)
+    windows = [{"name": f"mlp_{ex}",
+                "x": [round(float(v), 4)
+                      for v in window_features(synth_frames(ex, rng))]}
+               for ex in d["classes"]]
+    return stored, windows
+
+
+def _run_mlp(model: dict, x: list[float]) -> dict:
+    p = _mlp_forward(model, x)
+    ci = max(range(len(p)), key=lambda i: p[i])
+    return {"probs": [round(v, 6) for v in p],
+            "argmax": ci, "label": model["classes"][ci],
+            "confident": p[ci] >= model["min_proba"]}
+
+
 # ----------------------------------------------------------------- build
 def build() -> dict:
     return {
@@ -194,7 +282,17 @@ def build() -> dict:
         "detect_cases": [{**c, "expected": _run_detect(c["frames"],
                                                        c["fps"])}
                          for c in _detect_inputs()],
+        "window_feature_cases": [{**c, "expected": _run_wf(c["frames"])}
+                                 for c in _wf_inputs()],
+        "mlp": _build_mlp_section(),
     }
+
+
+def _build_mlp_section() -> dict:
+    model, windows = _mlp_model_and_windows()
+    return {"model": model,
+            "cases": [{**w, "expected": _run_mlp(model, w["x"])}
+                      for w in windows]}
 
 
 def generate(path: str = FIXTURE_FILE):
@@ -204,7 +302,9 @@ def generate(path: str = FIXTURE_FILE):
         json.dump(data, fh, indent=1, sort_keys=True)
         fh.write("\n")
     n = (len(data["fsm_cases"]) + len(data["plank_cases"])
-         + len(data["detect_cases"]))
+         + len(data["detect_cases"])
+         + len(data.get("window_feature_cases", []))
+         + len(data.get("mlp", {}).get("cases", [])))
     print(f"Wrote {n} parity cases -> {path}")
 
 
@@ -237,13 +337,26 @@ def verify(path: str = FIXTURE_FILE) -> int:
         if got != c["expected"]:
             print(f"detect drift in {c['name']}: {c['expected']} -> {got}")
             bad += 1
+    for c in data.get("window_feature_cases", []):
+        got = _run_wf(c["frames"])
+        if got != c["expected"]:
+            print(f"window_features drift in {c['name']}")
+            bad += 1
+    mlp = data.get("mlp", {})
+    for c in mlp.get("cases", []):
+        got = _run_mlp(mlp["model"], c["x"])
+        if got != c["expected"]:
+            print(f"mlp drift in {c['name']}: {c['expected']} -> {got}")
+            bad += 1
     if bad:
         print(f"{bad} case(s) drifted. If the change is intentional, "
               "regenerate the fixtures and update Swift/Kotlin in the "
               "same commit.")
         return 1
     n = (len(data["fsm_cases"]) + len(data["plank_cases"])
-         + len(data["detect_cases"]))
+         + len(data["detect_cases"])
+         + len(data.get("window_feature_cases", []))
+         + len(data.get("mlp", {}).get("cases", [])))
     print(f"All {n} parity cases match the committed expectations.")
     return 0
 
@@ -281,7 +394,19 @@ def selftest():
     assert det == {"detect_squat": "squat", "detect_pushup": "pushup",
                    "detect_plank": "plank", "detect_curl": "curl",
                    "detect_idle_none": None}, det
-    print("parity fixture generation invariants OK")
+    wf = {c["name"]: c["expected"]["x"] for c in data["window_feature_cases"]}
+    assert all(len(x) == NDIM for x in wf.values())
+    single = wf["wf_single_frame"]
+    assert all(v == 0.0 for v in single[len(FEAT_KEYS):2 * len(FEAT_KEYS)]), \
+        "single-frame std must be exactly 0"
+    mlp = data["mlp"]
+    hits = sum(1 for c in mlp["cases"]
+               if c["expected"]["label"] == c["name"][len("mlp_"):])
+    assert hits >= 6, f"tiny fixture model only classifies {hits}/8"
+    for c in mlp["cases"]:
+        assert abs(sum(c["expected"]["probs"]) - 1.0) < 1e-4
+    print("parity fixture generation invariants OK "
+          f"(mlp fixture model: {hits}/8 windows on-label)")
     return verify()
 
 

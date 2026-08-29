@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var hudCue: TextView
 
     private var analyzer: PoseAnalyzer? = null
+    private var mlModel: com.fekitech.gymcoach.core.TinyMlp? = null
     private var engine = SessionEngine("auto")
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -89,6 +90,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             finishSession()
         }
 
+        // optional trained classifier: export on the desktop with
+        // `python pose_coach.py --export-model classifier.json`, then
+        // `adb push classifier.json /data/data/com.fekitech.gymcoach/files/`
+        mlModel = runCatching {
+            File(filesDir, "classifier.json").takeIf { it.exists() }
+                ?.let { com.fekitech.gymcoach.core.tinyMlpFromJson(it.readText()) }
+        }.getOrNull()
+        mlModel?.let {
+            println("ML auto-detect: classifier ${it.modelVersion} loaded")
+            restartSession("auto")
+        }
+
         tts = TextToSpeech(this, this)
         sessionStartMs = SystemClock.uptimeMillis()
 
@@ -103,7 +116,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun restartSession(exercise: String) {
-        engine = SessionEngine(exercise)
+        engine = SessionEngine(exercise, mlModel)
         sessionStartMs = SystemClock.uptimeMillis()
         val hint = specs[exercise]?.cameraHint ?: getString(R.string.hint_auto)
         hudCue.text = hint

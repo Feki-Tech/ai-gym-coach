@@ -47,7 +47,7 @@ public func frameFeatures(_ ang: BodyAngles, _ pts: Skeleton) -> FrameFeatures {
 /// Rule-based exercise classifier over a sliding window of skeleton features.
 /// Locks after 3 agreeing votes. Bench press is NOT detectable from the
 /// skeleton alone (looks like a push-up) — select it manually.
-public final class AutoDetector {
+public class AutoDetector {
     static let windowS = 2.0
     static let voteEveryS = 0.5
     static let needAgree = 3
