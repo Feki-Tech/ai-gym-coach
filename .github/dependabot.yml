@@ -1,0 +1,26 @@
+# Dependency-drift watch (SECURITY.md S12, hardening phase P1): weekly PRs
+# for outdated/vulnerable Python deps, GitHub Actions and Gradle deps. PRs
+# only — the CI gates (selftests, parity replay, evals) decide if an update
+# is safe to merge; nothing auto-merges.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "pip"
+    directories: ["/"]
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "gradle"
+    directory: "/android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3

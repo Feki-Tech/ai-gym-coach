@@ -84,7 +84,10 @@ def _http_json(method: str, url: str, payload: dict | None = None,
 
 
 def _save_token(path: str, tok: dict):
-    with open(path, "w", encoding="utf-8") as fh:
+    # 0600 at creation (POSIX; no-op on Windows): the refresh token is write
+    # access to the athlete's calendar — SECURITY.md S8
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(tok, fh, indent=2)
 
 
@@ -290,6 +293,8 @@ def selftest():
                          "expiry": 0, "client_id": "CID",
                          "client_secret": "CS",
                          "token_uri": "https://example.test/token"})
+        if os.name == "posix":       # SECURITY.md S8: private at creation
+            assert os.stat(tf).st_mode & 0o777 == 0o600
         cal = CalendarClient(tf, http=fake_http)
         agenda = cal.agenda(7)
         assert "Standup" in agenda and "Trip" in agenda, agenda

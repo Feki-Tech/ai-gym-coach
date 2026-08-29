@@ -62,8 +62,11 @@ adb push classifier.json /data/data/com.fekitech.gymcoach/files/
 On the next launch auto-detect switches from the rule tier to the MLP
 (`MlDetector`, same sliding window and 3-agreeing-votes lock-in); without
 the file the rules keep working, exactly like the desktop before
-`--train-classifier`. Inference parity with Python is pinned by the
-`window_feature`/`mlp` sections of `data/parity_fixtures.json`.
+`--train-classifier`. The pushed file is treated as untrusted input: a
+malformed or shape-inconsistent model is refused at load (`TinyMlp.checked`
+— see docs/SECURITY.md S14) and the rules keep working. Inference parity
+with Python is pinned by the `window_feature`/`mlp` sections of
+`data/parity_fixtures.json`.
 
 Next: localization (the core keeps all strings in `FormRules.kt` for that
 reason), history UI, guided programs, phone-IMU sensor fusion

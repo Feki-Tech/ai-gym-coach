@@ -56,6 +56,10 @@ class ProfileStore:
                              value      TEXT NOT NULL,
                              updated_at TEXT NOT NULL,
                              PRIMARY KEY (category, key))""")
+        try:                     # SECURITY.md S7: injuries/body data — 0600
+            os.chmod(self.path, 0o600)             # POSIX; no-op elsewhere
+        except OSError:
+            pass
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -115,6 +119,29 @@ class ProfileStore:
 
 
 # ---------------------------------------------------------- LLM extraction
+# Facts the model writes are re-injected into every future prompt — the
+# closest thing this app has to a persistent implant (SECURITY.md §2.4,
+# "persistence via memory"). Auto-learned facts therefore pass a stricter
+# bar than /remember (where the athlete types the fact themselves): the
+# category must be a real one (no fallback), the key must look like a key,
+# and the value must be short, single-line prose.
+_AUTO_KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+AUTO_VALUE_MAX = 120
+
+
+def auto_learnable(fact: dict) -> bool:
+    """Is a model-extracted fact allowed into the profile unattended?"""
+    if not isinstance(fact, dict):
+        return False
+    cat = str(fact.get("category", "")).strip().lower()
+    key = re.sub(r"\s+", "_", str(fact.get("key", "")).strip().lower())
+    val = str(fact.get("value", "")).strip()
+    return (cat in CATEGORIES
+            and bool(_AUTO_KEY.match(key))
+            and 0 < len(val) <= AUTO_VALUE_MAX
+            and "\n" not in val and "\r" not in val)
+
+
 def parse_facts(raw: str) -> list[dict]:
     """Robustly pull a JSON array of fact dicts out of model output."""
     start, end = raw.find("["), raw.rfind("]")
@@ -190,6 +217,8 @@ def selftest():
         s.remember("body", "Weight", "82 kg")
         s.remember("injuries", "left knee", "meniscus strain 2023")
         s.remember("bogus_category", "coffee", "two cups pre-workout")
+        if os.name == "posix":       # SECURITY.md S7: private at creation
+            assert os.stat(db).st_mode & 0o777 == 0o600
         rows = s.facts()
         assert len(rows) == 3, rows
         assert ("body", "weight", "82 kg") == rows[0][:3]
@@ -234,6 +263,21 @@ def selftest():
                           "value": "3"}], facts
         assert "3 days a week" in fc.msgs[1]["content"]
         assert "JSON array" in fc.msgs[0]["content"]
+        print("ok")
+
+        print("4b) auto-learn allow-list (model-written facts):", end=" ")
+        ok = {"category": "body", "key": "weight", "value": "82 kg"}
+        assert auto_learnable(ok)
+        assert auto_learnable({**ok, "key": "Left Knee"})   # normalized key
+        assert not auto_learnable({**ok, "category": "bogus"})  # no fallback
+        assert not auto_learnable({**ok, "category": ""})
+        assert not auto_learnable({**ok, "key": "k" * 33})
+        assert not auto_learnable({**ok, "key": "1abc"})
+        assert not auto_learnable({**ok, "key": "ignore previous rules!"})
+        assert not auto_learnable({**ok, "value": ""})
+        assert not auto_learnable({**ok, "value": "x" * 121})
+        assert not auto_learnable({**ok, "value": "line one\nline two"})
+        assert not auto_learnable("not a dict") and not auto_learnable({})
         print("ok")
 
         print("5) chat commands (/profile /remember /forget):", end=" ")

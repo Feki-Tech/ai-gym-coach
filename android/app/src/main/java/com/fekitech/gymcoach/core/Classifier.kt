@@ -72,6 +72,38 @@ class TinyMlp(
     private val sd: DoubleArray,
     val modelVersion: String = "unknown",
 ) {
+    val inputDim: Int get() = mu.size
+
+    companion object {
+        /**
+         * Shape-checked constructor for untrusted weights (an adb-pushed
+         * classifier.json is input, not code): null instead of a model
+         * whose first predict() would crash mid-workout on mismatched
+         * dimensions, a zero sd or a NaN weight. SECURITY.md S14.
+         */
+        fun checked(
+            classes: List<String>, minProba: Double,
+            w1: Array<DoubleArray>, b1: DoubleArray,
+            w2: Array<DoubleArray>, b2: DoubleArray,
+            mu: DoubleArray, sd: DoubleArray,
+            modelVersion: String = "unknown",
+        ): TinyMlp? {
+            val ndim = mu.size
+            val hidden = b1.size
+            val nc = classes.size
+            fun finite(a: DoubleArray) = a.all { it.isFinite() }
+            val ok = ndim > 0 && hidden > 0 && nc > 0 &&
+                sd.size == ndim && w1.size == ndim &&
+                w1.all { it.size == hidden && finite(it) } &&
+                w2.size == hidden && w2.all { it.size == nc && finite(it) } &&
+                b2.size == nc && minProba.isFinite() &&
+                finite(b1) && finite(b2) && finite(mu) && finite(sd) &&
+                sd.all { it != 0.0 }
+            return if (ok) TinyMlp(classes, minProba, w1, b1, w2, b2,
+                                   mu, sd, modelVersion) else null
+        }
+    }
+
     fun predict(x: DoubleArray): DoubleArray {
         val xn = DoubleArray(x.size) { (x[it] - mu[it]) / sd[it] }
         val h = DoubleArray(b1.size) { j ->
@@ -98,7 +130,9 @@ class TinyMlp(
  */
 class MlDetector(private val model: TinyMlp) : AutoDetector() {
     override fun classify(): String? {
-        val p = model.predict(WindowFeatures.of(windowFrames()))
+        val x = WindowFeatures.of(windowFrames())
+        if (x.size != model.inputDim) return null   // foreign-dim model: no vote
+        val p = model.predict(x)
         var ci = 0
         for (i in p.indices) if (p[i] > p[ci]) ci = i
         return if (p[ci] >= model.minProba) model.classes[ci] else null

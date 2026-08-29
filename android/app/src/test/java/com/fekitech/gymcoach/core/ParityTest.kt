@@ -119,7 +119,10 @@ class ParityTest {
     fun mlpForwardParity() {
         val root = fixtures()
         val mlp = root.getJSONObject("mlp")
-        val model = tinyMlpFromJson(mlp.getJSONObject("model").toString())
+        val model = requireNotNull(
+            tinyMlpFromJson(mlp.getJSONObject("model").toString())) {
+            "fixture model failed shape-checked load"
+        }
         val cases = mlp.getJSONArray("cases")
         for (ci in 0 until cases.length()) {
             val c = cases.getJSONObject(ci)
