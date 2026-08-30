@@ -2933,7 +2933,7 @@ def selftest():
         assert opened_with == ["clip.mp4"], opened_with
     print(f"OK ({'cv2 capture patched' if have_cv2 else 'parse only'})")
 
-    print("28) load → volume/e1RM, and PRs against the log:", end=" ")
+    print("28) load -> volume/e1RM, and PRs against the log:", end=" ")
     reps = [{"load_kg": 60.0}] * 5 + [{"load_kg": 65.0}] * 2
     assert estimated_1rm(reps) == 70.0, estimated_1rm(reps)      # 60×(1+5/30)
     assert estimated_1rm([{"load_kg": None}]) is None
