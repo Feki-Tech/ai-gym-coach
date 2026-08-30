@@ -101,8 +101,14 @@ can copy it off the phone (Files app → GymCoach) and run
 3. Fill the listing: description, keywords, screenshots
    (6.7″ and 6.5″ iPhone sizes are mandatory; run on a simulator and ⌘S).
 4. **App Privacy** questionnaire → **Data Not Collected**
-   (all processing is on-device; the workout log never leaves the phone —
-   `PrivacyInfo.xcprivacy` in the repo declares the same).
+   (all processing is on-device; the workout log and the Apple Health data
+   the app reads never leave the phone — `PrivacyInfo.xcprivacy` in the
+   repo declares the same). Because the app uses HealthKit, App Review
+   additionally requires a **privacy policy URL** in the listing (a short
+   page stating that health data is read on-device only and never
+   transmitted) and checks that the Health permission texts match what the
+   app does — they are preset in `project.yml` and localized in
+   `InfoPlist.strings`.
 5. Export compliance: already answered by `ITSAppUsesNonExemptEncryption = false`
    in the Info.plist — no yearly encryption paperwork.
 6. Camera permission text is preset
@@ -154,8 +160,55 @@ entirely on GitHub's macOS runners. One-time setup:
 Every later run uploads a new build (build number = CI run number) and
 TestFlight notifies your phone. Internal-tester builds need **no App Review**.
 
-## 6. Suggested next steps
+## 6. Apple Health & the Fitness app
 
+The app integrates with Apple Health (HealthKit) — `Sources/HealthService.swift`,
+settings screen `Sources/HealthView.swift` (♥ button on the home screen).
+Nothing leaves the phone: the app has no server, and HealthKit data is never
+written anywhere except the on-device log.
+
+**What it writes** — every finished set is saved as an `HKWorkout` of type
+*Traditional Strength Training* (indoor), with the coach's numbers in the
+workout metadata (`tech.fekitech.gymcoach.exercise`, `.reps`, `.avg_score`,
+`.hold_s`, `.faults`). It shows up in **Fitness → Summary** (and counts toward
+the Move/Exercise rings when heart-rate or energy data from a Watch accompany
+it) and in **Health → Activity → Workouts**. The summary sheet links straight
+into both apps via Apple's URL schemes (`fitnessapp://`, `x-apple-health://`).
+
+**What it reads, and what the coach does with it:**
+
+| Health data (HealthKit type) | Why the coach wants it |
+|---|---|
+| Heart rate (`heartRate`) — live during a set | zone pill on the HUD (Z1–Z5, same bands as the desktop `EffortModel`), `avg_hr` / `peak_hr` in the session log — the keys the desktop sensor fusion writes, so the web dashboard reads both |
+| Resting heart rate, HRV SDNN (`restingHeartRate`, `heartRateVariabilitySDNN`) | readiness / recovery: elevated resting HR or depressed HRV vs. baseline → lighter session, longer rests |
+| VO₂ max (`vo2Max`) | conditioning level; conditioning-appropriate rest advice |
+| Body mass, height (`bodyMass`, `height`) | protein target (1.6–2.2 g/kg), relative-strength context for loads and e1RM |
+| Date of birth, biological sex (characteristics) | estimated max HR (220 − age) for the zones; the coach says it is an estimate |
+| Sleep (`sleepAnalysis`, asleep stages, last 24 h) | recovery: short sleep → expect lower scores, don't chase PRs |
+| Steps, active energy, exercise minutes (today) | how much the athlete has already done today before this set |
+| Workouts (last 7 days, any app) | training frequency and muscle rest across apps — the same muscle-recovery logic as the dashboard |
+
+Live heart rate comes from Apple Watch (continuously while a Watch workout is
+running, every few minutes otherwise) or from any chest strap / app that
+writes to Health; without a source the HUD simply shows no pill.
+
+Enable it in the app (♥ → *Connect Apple Health*); iOS shows the permission
+sheet with the texts from `NSHealthShareUsageDescription` /
+`NSHealthUpdateUsageDescription`. HealthKit never reveals *read* denials, so
+a denied item just reads as "—". Permissions can be changed later in
+**Health → Sharing → Apps → AI Gym Coach**. The XcodeGen spec adds the
+`com.apple.developer.healthkit` entitlement; with automatic signing Xcode
+turns the capability on for your team.
+
+Simulator note: HealthKit works in the simulator but has no data — add
+samples in the simulator's Health app or run on a device.
+
+## 7. Suggested next steps
+
+- Read the Health snapshot into the LLM coach's context on desktop via the
+  MCP bridge (export it from the phone, or sync the workout log).
+- HKWorkoutSession on watchOS for continuous heart rate without the Watch
+  Workout app.
 - App icon variants, localized listings, and a landscape iPad layout.
 - ARKit 3D body tracking (`ARBodyTrackingConfiguration`) for depth-aware
   joint angles on LiDAR devices.

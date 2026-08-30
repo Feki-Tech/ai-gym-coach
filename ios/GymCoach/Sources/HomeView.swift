@@ -28,6 +28,14 @@ struct HomeView: View {
             }
             .navigationTitle("AI Gym Coach")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    NavigationLink {
+                        HealthView()
+                    } label: {
+                        Image(systemName: "heart.fill")
+                    }
+                    .accessibilityLabel("Apple Health")
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
                         HistoryView()

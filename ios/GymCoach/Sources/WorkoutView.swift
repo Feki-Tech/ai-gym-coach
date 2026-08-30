@@ -11,6 +11,7 @@ final class WorkoutViewModel: ObservableObject {
     @Published var summary: SessionRecord?
 
     let camera = CameraService()
+    let health = HealthService.shared
     private let engine: SessionEngine
     private let speech = SpeechCoach()
     private let voiceOn: Bool
@@ -42,19 +43,28 @@ final class WorkoutViewModel: ObservableObject {
             }
         }
         camera.start()
+        health.startLiveHeartRate()
         if voiceOn { speech.say(NSLocalizedString("Ready. Let's go!", comment: "")) }
     }
 
     func endSet() {
         camera.stop()
-        let rec = engine.finish(durationS: Date().timeIntervalSince(t0))
+        let end = Date()
+        let hr = health.stopLiveHeartRate()
+        var rec = engine.finish(durationS: end.timeIntervalSince(t0))
+        if hr.avg != nil { rec = rec.withHeartRate(avg: hr.avg, peak: hr.peak) }
         try? WorkoutStore.documentsStore().append(rec)
         summary = rec
+        if rec.summary.reps > 0 || rec.plank != nil {
+            let start = t0
+            Task { await health.saveWorkout(rec, start: start, end: end) }
+        }
     }
 }
 
 struct WorkoutView: View {
     @StateObject private var vm: WorkoutViewModel
+    @ObservedObject private var health = HealthService.shared
     @Environment(\.dismiss) private var dismiss
 
     init(exercise: String, voiceOn: Bool) {
@@ -83,6 +93,7 @@ struct WorkoutView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             vm.camera.stop()
+            vm.health.stopLiveHeartRate()
         }
         .sheet(item: $vm.summary) { rec in
             SummaryView(record: rec) {
@@ -102,6 +113,9 @@ struct WorkoutView: View {
                 HStack {
                     Text(displayName(ex)).font(.headline)
                     Spacer()
+                    if let hr = health.heartRate {
+                        heartRatePill(hr, zone: health.heartRateZone)
+                    }
                     Text(LocalizedStringKey("phase.\(vm.hud.phase)"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -130,6 +144,34 @@ struct WorkoutView: View {
         .foregroundColor(.white)
         .padding(.horizontal)
         .padding(.top, 8)
+    }
+
+    private func heartRatePill(_ hr: Double, zone: Int?) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "heart.fill")
+            Text("\(Int(hr))").monospacedDigit()
+            if let z = zone {
+                Text(String(format: NSLocalizedString("Z%lld", comment: ""), z))
+                    .font(.caption2).bold()
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(zoneColor(zone).opacity(0.85), in: Capsule())
+        .foregroundColor(.black)
+        .padding(.trailing, 6)
+    }
+
+    private func zoneColor(_ zone: Int?) -> Color {
+        switch zone {
+        case 1: return .blue
+        case 2: return .green
+        case 3: return .yellow
+        case 4: return .orange
+        case 5: return .red
+        default: return .gray
+        }
     }
 
     private var cueBanner: some View {
