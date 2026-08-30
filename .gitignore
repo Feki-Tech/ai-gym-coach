@@ -46,3 +46,8 @@ ios/**/DerivedData/
 ios/**/xcuserdata/
 *.xcresult
 
+
+# MCP bridge runtime files (coach_mcp.py)
+data/live_state.json
+data/live_state.json.tmp
+data/app_commands.jsonl
