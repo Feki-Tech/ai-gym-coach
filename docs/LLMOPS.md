@@ -149,3 +149,19 @@ number to compare against next time.
 *(proposed)* once two or three models have baselines, keep them side by
 side (`coach_eval_baseline.<model>.json`) so the CI workflow gates each
 model against its own history.
+
+## Knowledge (RAG) and the behaviour contract — coach-3.3
+
+Since `coach-3.3` every call carries a **RELEVANT KNOWLEDGE** block built by
+`coach_knowledge.py`: BM25 over `data/knowledge/*.md` and the exercise
+catalogue (`data/exercises.json`), boosted toward the exercise on screen,
+capped at 1800 characters, placed after the profile and before the clock so
+the cached static prefix is untouched. Retrieval is deterministic (no model)
+so the evals stay reproducible; `COACH_EMBED_MODEL=nomic-embed-text` adds an
+Ollama embedding ranker fused by reciprocal rank. Two new tool actions,
+`exercise_lookup` and `plate_calc`, run through the same `[APP DATA]` loop
+as `history_query`; the `knowledge` eval category covers them.
+
+`python coach_knowledge.py --search "…"` shows what a question retrieves.
+The full list of requirements the model must meet, what it is given and
+which grader enforces each one: [MODEL_REQUIREMENTS.md](MODEL_REQUIREMENTS.md).

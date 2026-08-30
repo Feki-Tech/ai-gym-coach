@@ -360,3 +360,64 @@ everything on your machine.
 | Mic is "listening" but never hears you | your OS **input volume** is probably very low (we've seen 8%!) — the app now warns at startup. Raise it: Settings → Sound → Input → Volume. The HUD `mic:` line shows a live level meter: bars should jump when you speak |
 | Coach hears itself | it shouldn't — the mic is gated during TTS. If your speakers are very loud and the room echoes, lower the volume slightly |
 | Coach replies not spoken | TTS uses pyttsx3 — see voice notes in [WEBCAM.md](WEBCAM.md) |
+
+## Knowledge: the coach looks things up
+
+The coach no longer answers from a prompt-sized memory. `coach_knowledge.py`
+keeps a local library and retrieves the relevant part for every question:
+
+- **Coaching notes** — `data/knowledge/*.md`: every form fault the app
+  detects (cause, cue, how to build it), programming, recovery and
+  heart-rate zones, nutrition basics, technique per app exercise,
+  alternatives by equipment or (cleared) injury. Edit or add a `##` section
+  and it is live on the next question.
+- **Exercise catalogue** — `data/exercises.json`: 876 exercises with primary
+  and secondary muscles, equipment, level, mechanic, force and step-by-step
+  instructions ([free-exercise-db](https://github.com/yuhonas/free-exercise-db),
+  public domain; text/metadata only, images are linked not shipped).
+  `python coach_knowledge.py --fetch-wger` replaces it with
+  [wger](https://wger.de)'s CC-BY-SA catalogue (862 exercises, 20+ languages).
+
+Ask "what can I do for glutes with no equipment?" and the coach emits
+`ACTION: {"do": "exercise_lookup", "muscle": "glutes", "equipment": "body only"}`,
+gets the matching entries back as app data and only then recommends. "How
+do I load 100 kg?" → `plate_calc` → "two 20s per side". Commands without
+the LLM: `/exercise romanian deadlift`, `/exercise glutes`, `/plates 100`.
+
+Catalogue exercises are suggestions for off-camera work; only the nine app
+exercises can be counted or programmed. Optional hybrid ranking with an
+Ollama embedding model: `COACH_EMBED_MODEL=nomic-embed-text`
+(`ollama pull nomic-embed-text`). Details and the behaviour contract:
+[MODEL_REQUIREMENTS.md](MODEL_REQUIREMENTS.md).
+
+## Load, volume, estimated 1RM and personal records
+
+Tell the coach the weight — "I'm on 60 kilos" → `ACTION: {"do": "set_load",
+"kg": 60}` — or start with `--load 60`. Every rep is logged with its load;
+the set gets `volume_kg` and an Epley `e1rm_kg` (load × (1 + reps/30)),
+the app announces a **personal record** live when you pass your most reps
+ever for that exercise and at the end for e1RM and plank holds, and the
+dashboard charts both per exercise. `0` clears the load (bodyweight).
+
+## A bigger model through MCP
+
+`python coach_mcp.py` is an MCP server (stdio, standard library only) with
+the athlete's data as tools: `get_training_overview`, `get_training_history`,
+`get_last_session`, `get_profile`, `remember_fact`, `forget_fact`,
+`search_exercises`, `get_exercise`, `get_coaching_notes`, `plate_calculator`,
+`get_live_state`, `queue_app_command`; resources `coach://profile`,
+`coach://history`, `coach://live`.
+
+```bash
+claude mcp add gym-coach -- uv run --directory /path/to/ai-gym-coach python coach_mcp.py
+python coach_mcp.py --list
+python coach_mcp.py --call search_exercises '{"muscle": "glutes", "equipment": "body only"}'
+```
+
+Claude Desktop: add the same command under `mcpServers` in
+`claude_desktop_config.json`. While `pose_coach.py --coach` runs it writes
+`data/live_state.json` once a second and applies commands the MCP client
+queues in `data/app_commands.jsonl` (`set_exercise`, `set_rep_goal`,
+`rest_timer`, `set_tempo`, `cues`, `set_load`, `start_program`,
+`stop_program`) — "Claude, give me 90 seconds" works from another window.
+Nothing leaves the machine unless the client you connect is remote.

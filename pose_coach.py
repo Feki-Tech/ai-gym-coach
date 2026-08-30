@@ -46,6 +46,12 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.join(HERE, "pose_landmarker_lite.task")
 DEFAULT_LOG = os.path.join(HERE, "workout_log.json")
+# MCP bridge (coach_mcp.py): the running app publishes its live state here
+# and applies commands an external agent queued — coach mode only
+LIVE_FILE = os.environ.get("COACH_LIVE_FILE",
+                           os.path.join(HERE, "data", "live_state.json"))
+COMMANDS_FILE = os.environ.get("COACH_COMMANDS_FILE",
+                               os.path.join(HERE, "data", "app_commands.jsonl"))
 
 # BlazePose 33-landmark indices
 NOSE, L_EAR, R_EAR = 0, 7, 8
@@ -1204,6 +1210,7 @@ class WorkoutLog:
         }
 
     def add_rep(self, ev: RepEvent, velocity: float | None = None,
+                load_kg: float | None = None,
                 similarity: int | None = None):
         self.session["reps"].append({
             "n": ev.count, "score": ev.score,
@@ -1213,6 +1220,7 @@ class WorkoutLog:
             "velocity": round(velocity, 1) if velocity is not None else None,
             "similarity": similarity,
             "faults": ev.faults,
+            "load_kg": load_kg,
         })
 
     def finish(self, exercise: str, duration_s: float,
@@ -1233,6 +1241,11 @@ class WorkoutLog:
             "fault_counts": self._fault_counts(reps),
             "velocity_loss_pct": self._velocity_loss(reps),
         }
+        loads = [r["load_kg"] for r in reps if r.get("load_kg")]
+        if loads:                      # external load logged (--load / coach)
+            s["summary"]["load_kg"] = max(loads)
+            s["summary"]["volume_kg"] = round(sum(loads), 1)
+            s["summary"]["e1rm_kg"] = estimated_1rm(reps)
         if extra_summary:              # e.g. avg_hr/peak_hr from sensors
             s["summary"].update(extra_summary)
         history = []
@@ -1265,6 +1278,56 @@ class WorkoutLog:
         return round(max(0.0, 1 - cur / base) * 100, 1) if base > 0 else None
 
 
+def estimated_1rm(reps: list[dict]) -> float | None:
+    """Epley estimate from the heaviest load and the reps done at it:
+    load × (1 + reps/30). One number per set, like a training app's e1RM."""
+    by_load: dict[float, int] = {}
+    for r in reps:
+        if r.get("load_kg"):
+            by_load[r["load_kg"]] = by_load.get(r["load_kg"], 0) + 1
+    if not by_load:
+        return None
+    return round(max(kg * (1 + min(n, 30) / 30) for kg, n in by_load.items()), 1)
+
+
+def personal_bests(log_path: str, exercise: str) -> dict:
+    """Best reps per session, e1RM and hold from the log (PR detection)."""
+    best = {"reps": 0, "e1rm_kg": 0.0, "hold_s": 0.0, "sessions": 0}
+    if not os.path.exists(log_path):
+        return best
+    try:
+        with open(log_path, encoding="utf-8") as fh:
+            history = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return best
+    for sess in history if isinstance(history, list) else []:
+        if sess.get("exercise") != exercise:
+            continue
+        sm = sess.get("summary") or {}
+        best["sessions"] += 1
+        best["reps"] = max(best["reps"], sm.get("reps") or 0)
+        best["e1rm_kg"] = max(best["e1rm_kg"], sm.get("e1rm_kg") or 0.0)
+        pl = sess.get("plank") or {}
+        best["hold_s"] = max(best["hold_s"], pl.get("total_hold_s") or 0.0)
+    return best
+
+
+def session_prs(summary: dict, bests: dict) -> list[str]:
+    """Which personal records this session set (vs `bests` from before)."""
+    prs = []
+    if bests.get("sessions", 0) == 0:
+        return prs                      # first session of an exercise: no PRs
+    sm = summary.get("summary") or {}
+    if (sm.get("reps") or 0) > bests.get("reps", 0):
+        prs.append(f"most reps in a session: {sm['reps']}")
+    if (sm.get("e1rm_kg") or 0) > bests.get("e1rm_kg", 0):
+        prs.append(f"estimated 1RM: {sm['e1rm_kg']:g} kg")
+    pl = summary.get("plank") or {}
+    if (pl.get("total_hold_s") or 0) > bests.get("hold_s", 0):
+        prs.append(f"longest hold: {pl['total_hold_s']:g} s")
+    return prs
+
+
 def print_summary(s: dict):
     print("\n=== Session summary ===")
     print(f"Exercise: {s['exercise']}   duration: {s['duration_s']}s")
@@ -1281,11 +1344,16 @@ def print_summary(s: dict):
         if sm.get("velocity_loss_pct") is not None:
             print(f"Velocity loss across set: {sm['velocity_loss_pct']}%"
                   + ("  (fatigue!)" if sm["velocity_loss_pct"] > 20 else ""))
+        if sm.get("volume_kg"):
+            print(f"Load: {sm['load_kg']:g} kg   volume: {sm['volume_kg']:g} kg   "
+                  f"estimated 1RM: {sm['e1rm_kg']:g} kg")
         if sm["fault_counts"]:
             print("Faults:", ", ".join(f"{k}×{v}" for k, v in
                                        sorted(sm["fault_counts"].items())))
         else:
             print("Faults: none — great set!")
+    if sm.get("prs"):
+        print("PERSONAL RECORD:", "; ".join(sm["prs"]))
     print(f"Logged to workout log.")
     print("Web dashboard with charts: python coach_dashboard.py")
 
@@ -1528,6 +1596,12 @@ def apply_chat_action(action: dict, cfg: dict) -> str:
             on = bool(action.get("enabled", True))
             cfg["cues_on"] = on
             return "Form cues back on." if on else "Form cues muted."
+        if do == "set_load":
+            kg = float(action.get("kg", 0))
+            if 0 <= kg <= 500:
+                cfg["load_kg"] = kg or None
+                return (f"Logging {kg:g} kilos per rep." if kg
+                        else "Load cleared — bodyweight.")
         if do == "start_program":
             try:
                 prog = WorkoutProgram.parse(action.get("plan", ""))
@@ -1554,7 +1628,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
         model_file: str = MODEL_FILE, collect: str | None = None,
         program: str | None = None, sensors: str | None = None,
-        camera: int | str = 0, mirror: bool = True):
+        camera: int | str = 0, mirror: bool = True,
+        load_kg: float | None = None):
     try:
         import cv2
     except ImportError:
@@ -1634,7 +1709,23 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     session_cfg = {"switch_to": None, "rep_goal": None, "rest_until": 0.0,
                    "tempo_ecc_target": None, "cues_on": True,
                    "program": None, "program_new": prog_start,
-                   "program_stop": False}
+                   "program_stop": False, "load_kg": load_kg}
+    # personal records: what to beat today (per exercise, from the log)
+    bests = personal_bests(log_path, exercise) if spec else {"sessions": 0}
+    pr_said = False
+    muscle_cache: dict[str, list] = {}
+
+    def muscles_of(name: str | None) -> list:
+        """Muscle groups from the exercise catalogue (cached, best effort)."""
+        if not name:
+            return []
+        if name not in muscle_cache:
+            try:
+                import coach_knowledge
+                muscle_cache[name] = coach_knowledge.default_kb().muscles_for(name)[:4]
+            except Exception:
+                muscle_cache[name] = []
+        return muscle_cache[name]
 
     def say_cue(msg: str | None):
         """Form/rep cues respect the coach's mute switch and rest timer."""
@@ -1760,7 +1851,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         cue_kind = ""
         if feedback.current:
             cue_kind = ("fatigue" if feedback.current == FATIGUE_MSG else
-                        "praise" if feedback.current == "Great form!" else "fault")
+                        "praise" if feedback.current == "Great form!"
+                        or feedback.current.startswith("NEW PR") else "fault")
         prog = session_cfg["program"]
         pst = prog.status() if prog else None
         rest_next = None
@@ -1806,6 +1898,9 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             detector_label=("ML" if isinstance(detector, MLDetector) else "rules")
             if detector else "",
             show_help=show_help, elapsed_s=t if video else time.time() - t0,
+            load_kg=session_cfg["load_kg"],
+            best_reps=bests.get("reps", 0) if bests.get("sessions") else 0,
+            muscles=muscles_of(exercise if spec else None),
             cues_on=session_cfg["cues_on"],
             angles={k: ang[k] for k in ("knee", "elbow", "trunk_lean")}
             if ang and spec is None else None)
@@ -1819,6 +1914,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         print(f"Auto-detect mode: start exercising. Press {quit_hint} to finish.")
         voice.say("Start exercising, I'll recognize the movement.")
     t0, ts_ms, frame_idx, last_score = time.time(), 0, 0, None
+    next_bridge_t = 0.0
     fps_live, last_frame_t, was_resting = fps, time.time(), False
 
     try:
@@ -1870,6 +1966,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     exercise, spec = want, SPECS[want]
                     counter = RepCounter(spec)
                     plank = PlankTracker() if spec.mode == "hold" else None
+                    bests, pr_said = personal_bests(log_path, want), False
                     ref_traj = ((references.get(want) or {}).get("trajectory")
                                 if not record_reference else None)
                     print(f"Switched exercise -> {want} "
@@ -1878,6 +1975,36 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     live_state.update(
                         exercise=None if want == "auto" else want,
                         phase="IDLE", reps=0, last_rep=None)
+
+            if chat and time.time() >= next_bridge_t:      # MCP bridge (1 Hz)
+                next_bridge_t = time.time() + 1.0
+                try:
+                    snap = dict(live_state)
+                    snap["_written"] = time.time()
+                    snap["coach_config"] = {
+                        "rep_goal": session_cfg["rep_goal"],
+                        "rest_left_s": int(max(0.0, session_cfg["rest_until"]
+                                               - time.time())),
+                        "load_kg": session_cfg["load_kg"],
+                        "cues_on": session_cfg["cues_on"]}
+                    tmp = LIVE_FILE + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        json.dump(snap, fh, default=str)
+                    os.replace(tmp, LIVE_FILE)
+                except Exception:
+                    pass
+                if os.path.exists(COMMANDS_FILE):
+                    try:
+                        with open(COMMANDS_FILE, encoding="utf-8") as fh:
+                            queued = [json.loads(x) for x in fh if x.strip()]
+                        os.remove(COMMANDS_FILE)
+                    except Exception:
+                        queued = []
+                    for cmd in queued:
+                        ack = apply_chat_action(cmd, session_cfg)
+                        if ack:
+                            print(f"External coach ({cmd.get('_by', 'mcp')}): {ack}")
+                            voice.say_chat(ack)
 
             rest_left = max(0.0, session_cfg["rest_until"] - time.time())
             if was_resting and rest_left <= 0:
@@ -1983,6 +2110,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                             ref_traj = (references.get(det) or {}).get("trajectory")
                             if ref_traj:
                                 print("Reference rep found — scoring similarity.")
+                        bests, pr_said = personal_bests(log_path, det), False
                         if chat:
                             live_state["exercise"] = det
                         print(f"Auto-detected exercise: {det} "
@@ -2025,7 +2153,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         rep_traj = []
                         rep_scores.append(ev.score)
                         last_tempo = (ev.eccentric_s, ev.concentric_s)
-                        log.add_rep(ev, velocity=vel, similarity=sim)
+                        log.add_rep(ev, velocity=vel, similarity=sim,
+                                    load_kg=session_cfg["load_kg"])
+                        if (not pr_said and bests.get("sessions")
+                                and ev.count > bests.get("reps", 0)):
+                            pr_said = True          # most reps ever, live
+                            feedback.current = (f"NEW PR — {ev.count} reps, "
+                                                "your most ever!")
+                            voice.say(f"New record! {ev.count} reps — your most ever.")
+                            print(f"PR: {ev.count} reps beats {bests['reps']}")
                         if fatigue.add(vel):
                             feedback.current = FATIGUE_MSG
                             voice.say(FATIGUE_MSG)
@@ -2147,9 +2283,18 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     if hr_stats[1]:
         hr_extra = {"avg_hr": round(hr_stats[0] / hr_stats[1]),
                     "peak_hr": round(hr_stats[2])}
+    prs = session_prs({"summary": log.session["summary"], "plank": log.session["plank"]}
+                      if log.session.get("summary") else
+                      {"summary": {"reps": len(log.session["reps"]),
+                                   "e1rm_kg": estimated_1rm(log.session["reps"])},
+                       "plank": ({"total_hold_s": round(plank.total, 1)}
+                                 if plank else None)}, bests)
     summary = log.finish(exercise, time.time() - t0, plank,
-                         extra_summary=hr_extra)
+                         extra_summary={**(hr_extra or {}), **({"prs": prs} if prs else {})}
+                         or None)
     print_summary(summary)
+    if prs:
+        voice.say("Personal record! " + "; ".join(prs) + ".")
     card_shown = False
     if hud is not None and not headless and display is not None:
         # what happened and what to fix, in the window — not just the terminal
@@ -2788,6 +2933,47 @@ def selftest():
         assert opened_with == ["clip.mp4"], opened_with
     print(f"OK ({'cv2 capture patched' if have_cv2 else 'parse only'})")
 
+    print("28) load → volume/e1RM, and PRs against the log:", end=" ")
+    reps = [{"load_kg": 60.0}] * 5 + [{"load_kg": 65.0}] * 2
+    assert estimated_1rm(reps) == 70.0, estimated_1rm(reps)      # 60×(1+5/30)
+    assert estimated_1rm([{"load_kg": None}]) is None
+    with tempfile.TemporaryDirectory() as td:
+        lp = os.path.join(td, "log.json")
+        assert personal_bests(lp, "squat")["sessions"] == 0
+        first = {"summary": {"reps": 8, "e1rm_kg": 70.0}, "plank": None}
+        assert session_prs(first, personal_bests(lp, "squat")) == []   # no history
+        with open(lp, "w", encoding="utf-8") as fh:
+            json.dump([{"exercise": "squat", "summary": {"reps": 8, "e1rm_kg": 70.0}},
+                       {"exercise": "plank", "plank": {"total_hold_s": 40.0},
+                        "summary": {"reps": 0}}], fh)
+        b = personal_bests(lp, "squat")
+        assert b["reps"] == 8 and b["e1rm_kg"] == 70.0 and b["sessions"] == 1
+        assert session_prs({"summary": {"reps": 9, "e1rm_kg": 66.0}, "plank": None}, b) \
+            == ["most reps in a session: 9"]
+        assert session_prs({"summary": {"reps": 8, "e1rm_kg": 72.5}, "plank": None}, b) \
+            == ["estimated 1RM: 72.5 kg"]
+        assert session_prs({"summary": {"reps": 0}, "plank": {"total_hold_s": 41.0}},
+                           personal_bests(lp, "plank")) == ["longest hold: 41 s"]
+        cfg = {"load_kg": None}
+        assert apply_chat_action({"do": "set_load", "kg": 60}, cfg).startswith("Logging 60")
+        assert cfg["load_kg"] == 60.0
+        assert "bodyweight" in apply_chat_action({"do": "set_load", "kg": 0}, cfg)
+        assert cfg["load_kg"] is None
+        assert apply_chat_action({"do": "set_load", "kg": 9999}, cfg) == ""
+        # end to end: the synthetic squatter with 60 kg logs volume + e1RM
+        _TEST_CAP_FACTORY, _TEST_POSE_STREAM = FakeCap, squat_skeleton
+        try:
+            with redirect_stdout(io.StringIO()):
+                run("squat", video="e2e", use_voice=False, log_path=lp,
+                    headless=True, detector_kind="rules", load_kg=60.0)
+        finally:
+            _TEST_CAP_FACTORY = _TEST_POSE_STREAM = None
+        with open(lp, encoding="utf-8") as fh:
+            sm = json.load(fh)[-1]["summary"]
+        assert sm["reps"] == 3 and sm["volume_kg"] == 180.0 and sm["e1rm_kg"] == 66.0, sm
+        assert "prs" not in sm                                   # 3 < 8 reps, 66 < 70
+    print("OK")
+
     print("\nAll selftests passed.")
 
 
@@ -2811,6 +2997,10 @@ if __name__ == "__main__":
                          "machine has, then exit (python coach_devices.py "
                          "--ble adds a heart-rate strap scan)")
     ap.add_argument("--no-voice", action="store_true", help="disable TTS voice")
+    ap.add_argument("--load", type=float, metavar="KG",
+                    help="external load per rep (bar + plates, dumbbells…) "
+                         "for volume and estimated-1RM tracking; the coach "
+                         "can also set it (\"I'm using 60 kilos\")")
     ap.add_argument("--no-mirror", action="store_true",
                     help="don't mirror the webcam image (default: mirrored "
                          "like a gym mirror; 'm' in the window toggles)")
@@ -2936,4 +3126,4 @@ if __name__ == "__main__":
             reference_file=args.reference_file, detector_kind=args.detector,
             model_file=args.model_file, collect=args.collect,
             program=args.program, sensors=args.sensors, camera=camera,
-            mirror=not args.no_mirror)
+            mirror=not args.no_mirror, load_kg=args.load)
