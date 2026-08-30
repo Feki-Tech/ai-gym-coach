@@ -59,6 +59,7 @@ targets:
         #   xcodebuild … COACH_GOOGLE_IOS_CLIENT_ID=123-abc.apps.googleusercontent.com
         #                COACH_MICROSOFT_CLIENT_ID=<app id> [COACH_MICROSOFT_TENANT=common]
         # Empty = that provider's button is hidden (Sign in with Apple stays).
+        SideloadBuild: $(SIDELOAD_BUILD)
         GoogleClientID: $(COACH_GOOGLE_IOS_CLIENT_ID)
         MicrosoftClientID: $(COACH_MICROSOFT_CLIENT_ID)
         MicrosoftTenant: $(COACH_MICROSOFT_TENANT)
@@ -77,6 +78,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.fekitech.gymcoach
+        SIDELOAD_BUILD: "NO"
         COACH_GOOGLE_IOS_CLIENT_ID: ""
         COACH_MICROSOFT_CLIENT_ID: ""
         COACH_MICROSOFT_TENANT: common

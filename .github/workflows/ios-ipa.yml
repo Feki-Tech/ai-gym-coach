@@ -1,0 +1,61 @@
+# Unsigned iPhone build for sideloading — no paid Apple Developer account.
+# Download the GymCoach.ipa artifact and install it with AltStore or
+# Sideloadly on Windows/macOS/Linux using a free Apple ID (docs/IOS.md §9).
+name: ios-ipa
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "feat/**"]
+    paths: ["ios/**", ".github/workflows/ios-ipa.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    name: Unsigned IPA (sideload)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/GymCoach/project.yml --project ios/GymCoach
+      - name: Sideload variant — drop paid-only capabilities
+        # Sign in with Apple needs a paid membership; a personal team can't
+        # provision it. The app hides the button when SIDELOAD_BUILD=YES.
+        run: |
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.applesignin" \
+            ios/GymCoach/GymCoach.entitlements || true
+          cat ios/GymCoach/GymCoach.entitlements
+      - name: Build for device (unsigned)
+        run: >
+          xcodebuild build
+          -project ios/GymCoach/GymCoach.xcodeproj
+          -scheme GymCoach
+          -configuration Release
+          -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+          SIDELOAD_BUILD=YES
+          COACH_GOOGLE_IOS_CLIENT_ID="${{ secrets.COACH_GOOGLE_IOS_CLIENT_ID }}"
+          COACH_MICROSOFT_CLIENT_ID="${{ secrets.COACH_MICROSOFT_CLIENT_ID }}"
+          -quiet
+      - name: Package IPA
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          test -d "$APP"
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr GymCoach.ipa Payload
+          ls -la GymCoach.ipa
+          echo "Bundle: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          echo "Version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist") ($(git rev-parse --short HEAD))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GymCoach-unsigned-ipa-${{ github.sha }}
+          path: GymCoach.ipa
+          retention-days: 14

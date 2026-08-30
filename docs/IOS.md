@@ -230,7 +230,64 @@ in the Keychain (`AfterFirstUnlockThisDeviceOnly`); no tokens are kept.
 Empty ids simply hide those buttons, so the CI simulator build needs no
 secrets.
 
-## 8. Suggested next steps
+## 8. Testing on your own iPhone — no Mac, no paid account
+
+Two free routes. Both use a **free Apple ID** (no $99 program): the app is
+signed with a personal certificate, runs for **7 days**, then must be
+refreshed (AltStore does that automatically over Wi‑Fi). Free accounts are
+limited to 3 sideloaded apps and 10 app ids per week, and cannot use
+paid-only capabilities — that is why the sideload build hides **Sign in
+with Apple** (Google/Microsoft sign-in still work). HealthKit may be
+unavailable depending on the sideloader; the app then shows the error on
+the Health screen and everything else works.
+
+### Route A — Windows PC (or Linux/macOS) + AltStore or Sideloadly
+
+1. **Get the IPA.** Every push to `main`/`feat/**` touching `ios/` (or a
+   manual *Run workflow*) runs `.github/workflows/ios-ipa.yml`, which builds
+   an unsigned `GymCoach.ipa` on GitHub's macOS runner. Open the repo →
+   **Actions → ios-ipa → latest run → Artifacts → `GymCoach-unsigned-ipa-…`**
+   and unzip it to get `GymCoach.ipa`. (Client ids for Google/Microsoft
+   sign-in come from the repository secrets `COACH_GOOGLE_IOS_CLIENT_ID` /
+   `COACH_MICROSOFT_CLIENT_ID` — optional.)
+2. **Prepare the iPhone** (iOS 16+): Settings → Privacy & Security →
+   **Developer Mode** → on (appears after the first install attempt on some
+   versions; the phone restarts). Connect the phone by USB and tap *Trust*.
+3. **Install a sideloader on the PC:**
+   - **AltStore** (altstore.io, "Classic"): install *iTunes* and *iCloud*
+     **from Apple's website** (not the Microsoft Store versions), then
+     AltServer. From the AltServer tray icon → *Install AltStore* → pick your
+     iPhone → sign in with your Apple ID (an app-specific password works). On
+     the phone: Settings → General → VPN & Device Management → trust your
+     Apple ID's developer app. Then open **AltStore → My Apps → + → choose
+     GymCoach.ipa**. AltServer refreshes it every week while the PC is on the
+     same Wi‑Fi.
+   - **Sideloadly** (sideloadly.io) is the one-shot alternative: drag the
+     IPA in, enter your Apple ID, *Start*. Its *Advanced options* let you keep
+     the bundle id and, on some versions, enable HealthKit.
+4. **Open the app.** Camera permission prompt → point the phone at a
+   person doing squats. Voice cues, history and the Health screen are all
+   there.
+
+Bundle id note: sideloaders usually append your team id to the bundle id
+(`tech.fekitech.gymcoach.XXXXXXXXXX`); if you configure Microsoft sign-in,
+register that id / redirect `msauth.<bundle id>://auth` in Entra.
+
+### Route B — a Mac with Xcode (free personal team)
+
+Xcode → Settings → Accounts → add your Apple ID → in the project's *Signing
+& Capabilities* pick the **Personal Team**, change the bundle id to something
+unique, remove the *Sign in with Apple* capability, plug the iPhone in and
+press Run. Same 7-day limit; the app is refreshed by running it from Xcode
+again.
+
+### When you do get the $99 membership
+
+Route A/B become unnecessary: `.github/workflows/testflight.yml` signs and
+uploads to TestFlight from CI (§5), with all capabilities including Sign in
+with Apple, 90-day builds and up to 10,000 testers.
+
+## 9. Suggested next steps
 
 - Read the Health snapshot into the LLM coach's context on desktop via the
   MCP bridge (export it from the phone, or sync the workout log).

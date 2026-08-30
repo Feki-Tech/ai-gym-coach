@@ -47,6 +47,9 @@ enum AuthConfig {
     static var microsoftClientID: String { plist("MicrosoftClientID") }
     static var microsoftTenant: String { plist("MicrosoftTenant").isEmpty ? "common" : plist("MicrosoftTenant") }
     static var bundleID: String { Bundle.main.bundleIdentifier ?? "tech.fekitech.gymcoach" }
+    /// Built for sideloading with a free Apple ID: no Sign in with Apple
+    /// (paid-only capability) — the Account screen hides that button.
+    static var isSideloadBuild: Bool { plist("SideloadBuild").uppercased() == "YES" }
 
     private static func plist(_ key: String) -> String {
         (Bundle.main.object(forInfoDictionaryKey: key) as? String)?

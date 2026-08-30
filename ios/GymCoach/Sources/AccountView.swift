@@ -38,6 +38,7 @@ struct AccountView: View {
                 }
             } else {
                 Section {
+                    if !AuthConfig.isSideloadBuild {
                     SignInWithAppleButton(.signIn) { _ in } onCompletion: { _ in }
                         .signInWithAppleButtonStyle(scheme == .dark ? .white : .black)
                         .frame(height: 46)
@@ -46,6 +47,7 @@ struct AccountView: View {
                                 .onTapGesture { Task { await auth.signInWithApple() } }
                         }
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+                    }
                     if let g = OIDCProvider.google() {
                         providerButton("Sign in with Google", icon: "g.circle.fill") {
                             await auth.signIn(with: g)
@@ -66,6 +68,12 @@ struct AccountView: View {
                     Text("Sign in")
                 } footer: {
                     Text("Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read.")
+                }
+                if AuthConfig.isSideloadBuild {
+                    Section {
+                        Text("Sideload build: Sign in with Apple is unavailable without a paid developer membership.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 if !auth.googleAvailable && !auth.microsoftAvailable {
                     Section {
