@@ -23,11 +23,51 @@ python pose_coach.py --exercise plank --no-voice
 python pose_coach.py --stats                # progress dashboard afterwards
 ```
 
-- A window opens with your skeleton, rep counter, phase, and live cues.
-- Voice coaching speaks the cues and rep counts (`--no-voice` to mute).
-- Press **q** or **Esc** in the video window to end the set (click the window
-  first so it has keyboard focus). You'll get a session summary and the set is
-  appended to `workout_log.json`.
+- A window opens. Until it sees you, a **framing guide** says what it needs
+  (whole body in view, enough light, camera placement for the exercise).
+- Once tracked: your skeleton (the body part at fault turns red), a
+  **range-of-motion gauge** on the left with the live joint angle against the
+  exercise's *rep starts / full depth / lockout* lines, the rep counter with
+  its phase (lowering / bottom / lifting) and goal ring, the last rep's score,
+  tempo, golden-rep similarity and fatigue on the right, coaching cues at the
+  bottom, the rest countdown, program progress and — with `--coach` — the
+  coach's answers and the mic meter.
+- The webcam is mirrored like a gym mirror (`m` toggles, `--no-mirror`
+  disables). Video files and streams keep their orientation.
+- Voice coaching speaks the cues and rep counts (`--no-voice`, or `v` in the
+  window to mute).
+- Keys (also under `h`): `1`–`9` switch exercise (the current number starts a
+  fresh set), `a` auto-detect, `r` rest 60 s, `v` voice, `m` mirror, `c` talk
+  to the coach, `q`/`Esc` finish.
+- Press **q** or **Esc** to end the set (click the window first so it has
+  keyboard focus). A **summary card** shows reps, scores, tempo, faults and
+  what to fix — and if no rep was counted, *why* (how deep you got versus the
+  thresholds). The set is appended to `workout_log.json`.
+
+### Choosing a camera (and a microphone)
+
+```bash
+python pose_coach.py --list-devices      # cameras with resolution, mics, speakers
+python coach_devices.py --ble            # same, plus a 5 s scan for BLE heart-rate straps
+
+python pose_coach.py --exercise squat --camera 1               # second webcam
+python pose_coach.py --exercise squat --camera /dev/video2     # Linux device path
+python pose_coach.py --exercise squat --camera rtsp://phone:8554/live   # phone/IP camera stream
+python pose_coach.py --exercise auto --coach --mic "Camo"      # mic by (part of) name, or index
+```
+
+- Default is camera `0` and the OS default microphone. `COACH_CAMERA` and
+  `COACH_MIC` environment variables set the defaults; the flags override.
+- Any OpenCV-openable source works as `--camera`: an index, a device path,
+  or an `rtsp://` / `http://…/mjpg` URL (phone apps like Camo, DroidCam or
+  IP Webcam expose one).
+- Windows: `--list-devices` shows the PnP names next to the indices; the
+  order usually matches OpenCV's, so if `--camera 1` opens the wrong one,
+  try the neighbour.
+- `--mic` takes a sounddevice index or a case-insensitive part of the name
+  (`"camo"`, `"intel"`); an unknown name exits with the list of inputs.
+- Docker (Linux): `CAMERA_DEV=/dev/video2 docker compose run --rm webcam`
+  maps that host camera to `/dev/video0` inside the container.
 
 ### Camera placement
 
@@ -125,9 +165,13 @@ OS:
    docker run --rm -v ${PWD}\data:/data ai-gym-coach --stats --log-file /data/workout_log.json
    ```
 
-> Advanced (unsupported): `usbipd-win` can attach a USB webcam to WSL2, but
-> the stock WSL2 kernel ships without the `uvcvideo` driver, so it requires
-> building a custom kernel. Recording + analyzing is the pragmatic path.
+> Advanced (unsupported): `usbipd-win` can attach a USB webcam to WSL2.
+> Older stock WSL2 kernels shipped without the `uvcvideo` driver (custom
+> kernel needed); recent ones (6.6+, check `modinfo uvcvideo` inside WSL)
+> ship it as a module — `usbipd attach --wsl --busid <id>` on Windows, then
+> `sudo modprobe uvcvideo` and `python pose_coach.py --list-devices` in WSL.
+> Built-in laptop cameras are often not attachable this way. Recording +
+> analyzing, or running natively on Windows, remains the pragmatic path.
 
 ---
 

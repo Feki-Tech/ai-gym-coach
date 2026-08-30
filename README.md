@@ -13,6 +13,8 @@ your form, and coaches you with on-screen + voice feedback.
 - **Rep counting & phases** — finite-state machine on joint-angle signals (descent → bottom → ascent → lockout), tempo per phase
 - **Form evaluation** — biomechanical rules per exercise: back rounding, knee valgus, insufficient depth, elbow flare/swing, uneven pressing, chin-over-bar, body sag…
 - **Smoothing** — One Euro filter per keypoint with visibility gating
+- **A HUD that shows what the coach sees** — the video window is the app: the skeleton lights up the body part at fault, a live **range-of-motion gauge** shows your joint angle against the exercise's own *rep starts / full depth / lockout* thresholds (so you see *why* a rep did or didn't count), rep counter with goal ring, phase (lowering / bottom / lifting), last-rep score, tempo, golden-rep similarity, fatigue, heart-rate zone, program progress, rest countdown, the coach's answers and mic state — plus a **framing guide** before anyone is tracked, an end-of-set **summary card** with what to fix, and **keys** to switch exercise (1-9), auto-detect (a), rest (r), mute (v), mirror (m), help (h). Webcams are mirrored like a gym mirror (`--no-mirror` to disable). Real TrueType text on every OS; no new dependencies
+- **Pick your devices** — `--list-devices` shows every camera (with resolution), microphone and speaker the machine has (`python coach_devices.py --ble` also scans for heart-rate straps); `--camera 1` / `--camera /dev/video2` / `--camera rtsp://…` chooses the video source and `--mic 3` or `--mic "Camo"` the microphone the coach listens on — also via `COACH_CAMERA` / `COACH_MIC` env vars and `CAMERA_DEV=/dev/video2` for the compose services
 - **Voice coaching** — prioritized, rate-limited cues via TTS ("Straighten your back", "Slow down", "Great form!")
 - **Auto exercise detection** — `--exercise auto` recognizes the movement from the skeleton (8 of 9 exercises; bench press needs manual selection)
 - **ML exercise classifier** — `--train-classifier` trains a small neural network (numpy MLP on windowed skeleton features, no extra deps) that replaces the rule-based detector; bootstrapped from synthetic motion data, improvable with your own recordings via `--collect`. Every model ships with a version manifest, and retrains pass a **champion/challenger gate** on a fixed eval harness — a worse model never silently replaces the one you have (`--no-gate` opts out). `--export-model` writes the promoted model as portable JSON, and the **same classifier runs on iOS and Android** (`MLDetector` in CoachCore and the Kotlin core, inference parity pinned by the cross-engine fixtures). The harness also judges on a committed set of real windows (`data/eval_windows.jsonl`, grown via `--export-eval`) — recording protocol in [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md)
@@ -34,7 +36,9 @@ your form, and coaches you with on-screen + voice feedback.
 pip install -r requirements.txt        # or, reproducible from the lockfile:
                                        #   uv sync   (https://docs.astral.sh/uv/)
 
-python pose_coach.py --exercise squat            # webcam + voice
+python pose_coach.py --list-devices              # which cameras / mics / speakers do I have?
+python pose_coach.py --exercise squat            # webcam + voice (h in the window = keys)
+python pose_coach.py --exercise squat --camera 1 # a different webcam (index, /dev/videoN or rtsp:// URL)
 python pose_coach.py --exercise auto             # detect the exercise for me
 python pose_coach.py --exercise plank --no-voice
 python pose_coach.py --exercise deadlift --video set1.mp4
@@ -47,7 +51,26 @@ python pose_coach.py --selftest                  # verify install, no camera nee
 ```
 
 The pose model (~5 MB) downloads automatically on first run. Press `q` to end
-a set and print the session summary.
+a set: a summary card shows what happened and what to fix, and the set is
+logged.
+
+### In the window
+
+| Key | Does |
+|---|---|
+| `1`–`9` | switch exercise (1 squat · 2 push-up · 3 bench · 4 deadlift · 5 lunge · 6 shoulder press · 7 curl · 8 pull-up · 9 plank) — the current number starts a fresh set |
+| `a` | auto-detect the exercise from your movement |
+| `r` | start / cancel a 60 s rest |
+| `v` | mute / unmute the voice |
+| `m` | mirror the camera on / off |
+| `c` | talk to the coach now (`--coach`) |
+| `h` | help overlay |
+| `q` / `Esc` | finish the set → summary card |
+
+Before anyone is tracked the window tells you what it needs (whole body in
+view, light, camera placement); once you are, the gauge on the left shows
+the live joint angle against the *rep starts / full depth / lockout* lines,
+so a rep that doesn't count is never a mystery.
 
 **Webcam setup, camera placement, and Docker webcam options:
 [docs/WEBCAM.md](docs/WEBCAM.md).**
@@ -62,6 +85,7 @@ python pose_coach.py --exercise auto --coach   # chat while you train
                                                # (hands-free: just speak;
                                                #  'c' = interrupt the coach)
 python coach_chat.py --voice --hands-free      # standalone voice chat
+python coach_chat.py --voice --hands-free --mic "Camo"   # ...on a specific microphone
 docker compose run --rm coach                  # text chat fully in Docker
 ```
 

@@ -1074,24 +1074,29 @@ def score_rep(ev: RepEvent) -> int:
 class FeedbackEngine:
     """Rate-limited, priority-ordered coaching cues."""
 
-    def __init__(self, cooldown=3.0):
+    def __init__(self, cooldown=3.0, hold_s=2.5):
         self.cooldown = cooldown
+        self.hold_s = hold_s           # a cue stays readable on screen
         self.last_said: dict[str, float] = {}
         self.current = ""
+        self._since = self._t = -1e9
 
     def push(self, faults: list[str], t: float) -> str | None:
         """Returns the message if a new cue fired (for the voice channel)."""
+        self._t = t
         for fault in sorted(faults, key=lambda x: FAULT_MSGS[x][0]):
             if t - self.last_said.get(fault, -1e9) >= self.cooldown:
                 self.last_said[fault] = t
                 self.current = FAULT_MSGS[fault][1]
+                self._since = t
                 return self.current
-        if not faults:
-            self.current = ""
+        if not faults and t - self._since >= self.hold_s:
+            self.current = ""      # per-rep cues don't vanish on the next frame
         return None
 
     def praise(self):
         self.current = "Great form!"
+        self._since = self._t
         return self.current
 
 
@@ -1105,6 +1110,7 @@ class Voice:
 
     def __init__(self, enabled=True):
         self.enabled = enabled
+        self.muted = False              # 'v' in the window; keeps the engine
         self.q: queue.Queue[str | None] = queue.Queue()
         self._engine = None
         self._speaking = False
@@ -1149,12 +1155,12 @@ class Voice:
                 engine = self._engine = None
 
     def say(self, msg: str):
-        if self.enabled and self.q.qsize() < 2:   # drop cues if backlogged
-            self.q.put(msg)
+        if self.enabled and not self.muted and self.q.qsize() < 2:
+            self.q.put(msg)                 # drop cues if backlogged
 
     def say_chat(self, msg: str):
         """Chat sentences are never dropped (unlike backlogged form cues)."""
-        if self.enabled:
+        if self.enabled and not self.muted:
             self.q.put(msg)
 
     def is_speaking(self) -> bool:
@@ -1547,7 +1553,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         coach: bool = False, record_reference: bool = False,
         reference_file: str = REFERENCE_FILE, detector_kind: str = "auto",
         model_file: str = MODEL_FILE, collect: str | None = None,
-        program: str | None = None, sensors: str | None = None):
+        program: str | None = None, sensors: str | None = None,
+        camera: int | str = 0, mirror: bool = True):
     try:
         import cv2
     except ImportError:
@@ -1577,11 +1584,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
 
     detector = make_detector() if auto else None
 
+    import coach_devices
     cap = (_TEST_CAP_FACTORY() if _TEST_CAP_FACTORY
-           else cv2.VideoCapture(video if video else 0))
+           else cv2.VideoCapture(video if video else camera))
     if not cap.isOpened():
-        sys.exit(f"Could not open {'video: ' + video if video else 'webcam 0'}"
-                 + ("" if video else " (camera busy or access blocked?)"))
+        sys.exit(f"Could not open "
+                 f"{'video: ' + video if video else coach_devices.describe_camera(camera)}"
+                 + ("" if video else " (camera busy or access blocked? "
+                    "python pose_coach.py --list-devices shows what is "
+                    "available)"))
     if _TEST_POSE_STREAM is None:
         mp, landmarker = make_landmarker()
     else:
@@ -1605,6 +1616,9 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     rep_traj: list[float] = []
     best_ref: tuple[int, list[float]] | None = None
     last_sim = None
+    rep_scores: list[int] = []         # this set, for the HUD dots
+    last_tempo: tuple[float, float] | None = None
+    deepest: float | None = None       # lowest signal angle seen (0-rep tips)
 
     collect_rows: list[dict] | None = None
     if collect:
@@ -1687,6 +1701,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             elif counter is not None:
                 counter = RepCounter(spec)
             rep_traj = []
+            rep_scores.clear()
         session_cfg["rep_goal"] = b.get("reps")
         if chat:
             live_state["program"] = prog.status()
@@ -1719,6 +1734,82 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     writer = None
     # nobody sees the frame in headless-no-output runs: skip cv2 overlay work
     draw_hud = (not headless) or bool(output)
+    hud = None
+    if draw_hud and cv2 is not None:
+        import coach_hud
+        hud = coach_hud.Hud()
+    # webcams are mirrored like a gym mirror (what people expect when they
+    # face a screen); files/streams keep their orientation. 'm' toggles.
+    mirror_on = bool(mirror) and not video and cv2 is not None \
+        and _TEST_CAP_FACTORY is None
+    show_help = False
+    tracking, missing, brightness = "none", [], 128.0
+    faults_now: list[str] = []
+    ang: dict | None = None
+    display = None                     # last frame shown (summary card base)
+    win = "AI Gym Coach"
+    source_label = ("video" if video else
+                    coach_devices.describe_camera(camera).replace("webcam ", "cam "))
+    if not headless and cv2 is not None:
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        print("Window keys: 1-9 exercise, a auto, r rest, v voice, m mirror, "
+              "h help, q finish" + (", c talk to the coach" if coach else ""))
+
+    def hud_state() -> "coach_hud.HudState":
+        """Snapshot of everything the HUD shows this frame."""
+        cue_kind = ""
+        if feedback.current:
+            cue_kind = ("fatigue" if feedback.current == FATIGUE_MSG else
+                        "praise" if feedback.current == "Great form!" else "fault")
+        prog = session_cfg["program"]
+        pst = prog.status() if prog else None
+        rest_next = None
+        if pst and rest_left > 0:
+            rest_next = (f"next: {pst['exercise'].replace('_', ' ')} · set "
+                         f"{pst['set']}/{pst['sets']} · {pst['target']}")
+        chat_info = None
+        if chat:
+            chat_info = {"status": chat.status, "level": chat.mic_level,
+                         "user": getattr(chat, "hud_user", None),
+                         "reply": getattr(chat, "hud_reply", "")}
+        vel_ratio = (1.0 - fatigue.loss) if len(fatigue.vels) >= 4 else None
+        sig = spec.signal if spec else None
+        return coach_hud.HudState(
+            exercise=None if spec is None else exercise,
+            mode="auto" if spec is None else spec.mode,
+            concentric=spec.concentric if spec else "ascent",
+            phase=counter.state if counter else "IDLE",
+            reps=counter.count if counter else 0,
+            rep_goal=session_cfg["rep_goal"], rep_scores=list(rep_scores),
+            last_score=last_score, similarity=last_sim,
+            has_reference=bool(ref_traj), recording_reference=record_reference,
+            tempo=last_tempo, tempo_target=session_cfg["tempo_ecc_target"],
+            velocity_ratio=vel_ratio, fatigue_warned=fatigue.warned,
+            signal=sig, signal_value=(ang[sig] if ang and sig else None),
+            thresholds=((spec.start_below, spec.bottom_below, spec.lockout_above)
+                        if spec and spec.mode == "reps" else None),
+            side=ang["side"] if ang else "L",
+            hold_total=plank.total if plank else 0.0,
+            hold_streak=plank.streak if plank else 0.0,
+            hold_best=plank.best if plank else 0.0,
+            hold_good_above=plank.good_above if plank else 160.0,
+            faults_now=list(faults_now), cue=feedback.current, cue_kind=cue_kind,
+            rest_left=rest_left, rest_next=rest_next, program=pst,
+            hr=round(effort.current) if effort is not None
+            and effort.current is not None else None,
+            hr_zone=effort.zone() if effort is not None
+            and effort.current is not None else None,
+            chat=chat_info, voice_on=voice.enabled and not voice.muted,
+            mirrored=mirror_on, fps=fps_live, source=source_label,
+            tracking=tracking, missing=list(missing), brightness=brightness,
+            camera_hint=spec.camera_hint if spec else "side view",
+            detector_label=("ML" if isinstance(detector, MLDetector) else "rules")
+            if detector else "",
+            show_help=show_help, elapsed_s=t if video else time.time() - t0,
+            cues_on=session_cfg["cues_on"],
+            angles={k: ang[k] for k in ("knee", "elbow", "trunk_lean")}
+            if ang and spec is None else None)
+
     quit_hint = "Ctrl+C" if headless else "q"
     if spec:
         print(f"{exercise}: camera hint — {spec.camera_hint}. "
@@ -1735,6 +1826,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             ok, frame = cap.read()
             if not ok:
                 break
+            if mirror_on:
+                frame = cv2.flip(frame, 1)
             now_t = time.time()
             if 0 < now_t - last_frame_t < 1:
                 fps_live = 0.9 * fps_live + 0.1 / (now_t - last_frame_t)
@@ -1761,22 +1854,25 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     if chat:
                         live_state["program"] = None
 
-            want = session_cfg["switch_to"]          # coach-driven switch
+            want = session_cfg["switch_to"]          # coach- or key-driven switch
             if want:
                 session_cfg["switch_to"] = None
+                if counter is not None and counter.count:
+                    debrief_set()            # the set that just ended
                 rep_traj, last_sim, last_score = [], None, None
+                rep_scores, last_tempo, deepest = [], None, None
                 fatigue = FatigueMonitor()   # new movement, new baseline
                 if want == "auto":
                     spec, counter, plank, ref_traj = None, None, None, None
                     detector = make_detector(verbose=False)
-                    print("Coach: re-detecting the exercise.")
+                    print("Re-detecting the exercise.")
                 else:
                     exercise, spec = want, SPECS[want]
                     counter = RepCounter(spec)
                     plank = PlankTracker() if spec.mode == "hold" else None
                     ref_traj = ((references.get(want) or {}).get("trajectory")
                                 if not record_reference else None)
-                    print(f"Coach switched exercise -> {want} "
+                    print(f"Switched exercise -> {want} "
                           f"(camera hint — {spec.camera_hint})")
                 if chat:
                     live_state.update(
@@ -1819,9 +1915,26 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
                     ts_ms)
                 pts = landmarks_to_array(result)
-            if pts is not None:
+            if hud is not None and frame_idx % 10 == 1:
+                brightness = float(frame[::8, ::8].mean())
+            faults_now = []
+            if pts is None:
+                tracking, missing, ang = "none", [], None
+            else:
                 pts = smoother.update(pts, t)
                 ang = body_angles(pts)
+                if spec is not None and spec.signal == "elbow":
+                    need = (("shoulders", (L_SHO, R_SHO)), ("elbows", (L_ELB, R_ELB)),
+                            ("wrists", (L_WRI, R_WRI)), ("hips", (L_HIP, R_HIP)))
+                else:
+                    need = (("shoulders", (L_SHO, R_SHO)), ("hips", (L_HIP, R_HIP)),
+                            ("knees", (L_KNE, R_KNE)), ("ankles", (L_ANK, R_ANK)))
+                missing = [n for n, (a, b) in need
+                           if max(pts[a, 3], pts[b, 3]) < VIS_MIN]
+                tracking = "ok" if not missing else "partial"
+                if spec is not None and spec.mode == "reps":
+                    deepest = (ang[spec.signal] if deepest is None
+                               else min(deepest, ang[spec.signal]))
 
                 if chat:      # live physics + environment for the LLM coach
                     live_state["joint_angles_deg"] = {
@@ -1862,10 +1975,6 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
 
                 if spec is None:                            # ---- auto-detect
                     det = detector.update(frame_features(ang, pts), t)
-                    hud1 = "AUTO  detecting exercise..."
-                    hud2 = (f"knee: {ang['knee']:5.1f}   "
-                            f"elbow: {ang['elbow']:5.1f}   "
-                            f"trunk: {ang['trunk_lean']:4.1f}")
                     if det:
                         exercise, spec = det, SPECS[det]
                         counter = RepCounter(spec)
@@ -1889,9 +1998,6 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                     if (pb and "hold_s" in pb and pb["exercise"] == exercise
                             and plank.streak >= pb["hold_s"]):
                         advance_program()
-                    hud1 = (f"PLANK  hold: {plank.total:5.1f}s   "
-                            f"best: {plank.best:5.1f}s")
-                    hud2 = f"body line: {ang['body_line']:5.1f}"
                     if chat:
                         live_state["plank_hold_s"] = round(plank.total, 1)
                 else:                                       # ---- rep exercise
@@ -1917,6 +2023,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                                                  or ev.score >= best_ref[0]):
                             best_ref = (ev.score, list(rep_traj))
                         rep_traj = []
+                        rep_scores.append(ev.score)
+                        last_tempo = (ev.eccentric_s, ev.concentric_s)
                         log.add_rep(ev, velocity=vel, similarity=sim)
                         if fatigue.add(vel):
                             feedback.current = FATIGUE_MSG
@@ -1970,56 +2078,9 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         rep_traj = []           # discarded blip / idle frames
                     if chat:
                         live_state["phase"] = counter.state
-                    hud1 = (f"{exercise.upper()}  reps: {counter.count}"
-                            + (f"/{session_cfg['rep_goal']}"
-                               if session_cfg["rep_goal"] else "")
-                            + f"   phase: {counter.state}"
-                            + (f"   last score: {last_score}" if last_score is not None else "")
-                            + (f"   ref-sim: {last_sim}" if last_sim is not None else ""))
-                    hud2 = (f"{spec.signal}: {ang[spec.signal]:5.1f}   "
-                            f"trunk: {ang['trunk_lean']:4.1f}")
 
-                if effort is not None and effort.current is not None:
-                    hud2 += (f"   hr: {round(effort.current)}"
-                             f" (z{effort.zone()})")
-
-                if draw_hud:
-                    h, w = frame.shape[:2]
-                    for i, j in EDGES:
-                        if pts[i, 3] > VIS_MIN and pts[j, 3] > VIS_MIN:
-                            cv2.line(frame,
-                                     (int(pts[i, 0] * w), int(pts[i, 1] * h)),
-                                     (int(pts[j, 0] * w), int(pts[j, 1] * h)),
-                                     (0, 255, 120), 2)
-                    for k, line in enumerate((hud1, hud2)):
-                        cv2.putText(frame, line, (10, 30 + 28 * k),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                                    (255, 255, 255), 2)
-                    if chat:
-                        st = chat.status
-                        col = ((0, 220, 255) if "hearing" in st else
-                               (80, 200, 80) if st == "listening" else
-                               (200, 200, 200))
-                        bars = "|" * min(10, int(chat.mic_level * 3))
-                        cv2.putText(frame, f"mic: {st} {bars}",
-                                    (10, 30 + 28 * 2),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
-                    prog_hud = session_cfg["program"]
-                    if prog_hud and prog_hud.current:
-                        cv2.putText(frame, "program: " + prog_hud.describe(),
-                                    (10, 30 + 28 * 3),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.6, (255, 200, 80), 2)
-                    if feedback.current:
-                        cv2.putText(frame, feedback.current,
-                                    (10, frame.shape[0] - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                    (0, 80, 255), 2)
-
-            if draw_hud and rest_left > 0:       # coach-set rest countdown
-                cv2.putText(frame, f"REST {int(rest_left) + 1}s",
-                            (10, frame.shape[0] - 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (60, 200, 255), 3)
+            if hud is not None:
+                frame = hud.render(frame, pts, hud_state(), now_t)
 
             if output:
                 if writer is None:
@@ -2028,12 +2089,34 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                         (frame.shape[1], frame.shape[0]))
                 writer.write(frame)
             if not headless:
-                cv2.imshow("AI Gym Coach", frame)
+                if display is None:
+                    cv2.resizeWindow(win, frame.shape[1], frame.shape[0])
+                display = frame
+                cv2.imshow(win, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
                 if key == ord("c") and chat:
                     chat.push_to_talk()
+                elif key == ord("h"):
+                    show_help = not show_help
+                elif key == ord("v"):
+                    voice.muted = not voice.muted
+                    print("Voice muted." if voice.muted else "Voice on.")
+                elif key == ord("m") and not video:
+                    mirror_on = not mirror_on
+                elif key == ord("r"):
+                    if rest_left > 0:
+                        session_cfg["rest_until"] = 0.0
+                        print("Rest cancelled.")
+                    else:
+                        session_cfg["rest_until"] = time.time() + 60
+                        print("Rest: 60 s (r again cancels).")
+                elif key == ord("a"):
+                    session_cfg["switch_to"] = "auto"
+                elif ord("1") <= key <= ord("9"):
+                    session_cfg["switch_to"] = \
+                        coach_hud.EXERCISE_KEYS[key - ord("1")]
     except KeyboardInterrupt:
         print("\nInterrupted — finishing session...")
 
@@ -2043,8 +2126,6 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     if writer is not None:
         writer.release()
         print(f"Annotated video written to {output}")
-    if not headless:
-        cv2.destroyAllWindows()
     if record_reference:
         if best_ref:
             save_reference(exercise, best_ref[1], best_ref[0], reference_file)
@@ -2069,6 +2150,24 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
     summary = log.finish(exercise, time.time() - t0, plank,
                          extra_summary=hr_extra)
     print_summary(summary)
+    card_shown = False
+    if hud is not None and not headless and display is not None:
+        # what happened and what to fix, in the window — not just the terminal
+        card = hud.render_summary(
+            display, summary, deepest=deepest,
+            thresholds=(spec.start_below, spec.bottom_below, spec.lockout_above)
+            if spec and spec.mode == "reps" else None,
+            signal=spec.signal if spec else None, log_path=log_path)
+        cv2.imshow(win, card)
+        card_shown = True
+
+    def pump(ms: int) -> bool:
+        """Keep the window alive while waiting; True when a key was hit."""
+        if card_shown:
+            return (cv2.waitKey(ms) & 0xFF) != 255
+        time.sleep(ms / 1000)
+        return False
+
     debriefed = False
     if chat and (summary["summary"]["reps"] or plank):
         # session wrap-up from the coach (one sentence, spoken); wait
@@ -2080,14 +2179,20 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             for _ in range(150):
                 if not (chat._busy or voice.is_speaking()):
                     break
-                time.sleep(0.1)
+                pump(100)
     if not debriefed:
         if plank:
             voice.say(f"Done. You held {int(plank.total)} seconds.")
         elif summary["summary"]["reps"]:
             voice.say(f"Set done. {summary['summary']['reps']} reps, "
                       f"average score {int(summary['summary']['avg_score'])}.")
-    time.sleep(1.5)   # let the last voice line play
+    if card_shown:                     # summary stays up to 8 s or a key
+        for _ in range(80):
+            if pump(100):
+                break
+        cv2.destroyAllWindows()
+    else:
+        time.sleep(1.5)   # let the last voice line play
     voice.stop()
 
 
@@ -2641,6 +2746,48 @@ def selftest():
             assert abs(sum(p_py) - 1.0) < 1e-9
     print("OK (numpy and pure-python forward agree to 1e-9)")
 
+    print("27) --camera selects the capture device run() opens:", end=" ")
+    import coach_devices
+    assert coach_devices.parse_camera("1") == 1
+    assert coach_devices.parse_camera("/dev/video3") == "/dev/video3"
+    if have_cv2:
+        import unittest.mock as mock
+
+        import cv2
+        opened_with = []
+
+        class _Closed:
+            def isOpened(self): return False
+        with mock.patch.object(cv2, "VideoCapture",
+                               side_effect=lambda src: (opened_with.append(src),
+                                                        _Closed())[1]):
+            with tempfile.TemporaryDirectory() as td:
+                with redirect_stdout(io.StringIO()):
+                    for cam in (2, "/dev/video3", "rtsp://cam/live"):
+                        try:
+                            run("squat", None, False,
+                                os.path.join(td, "log.json"), headless=True,
+                                camera=cam)
+                            raise AssertionError("run() opened a closed cap")
+                        except SystemExit as e:
+                            msg = str(e)
+                            assert coach_devices.describe_camera(cam) in msg, msg
+                            assert "--list-devices" in msg, msg
+        assert opened_with == [2, "/dev/video3", "rtsp://cam/live"], opened_with
+        # --video still wins over --camera
+        opened_with.clear()
+        with mock.patch.object(cv2, "VideoCapture",
+                               side_effect=lambda src: (opened_with.append(src),
+                                                        _Closed())[1]):
+            with redirect_stdout(io.StringIO()):
+                try:
+                    run("squat", "clip.mp4", False, "unused.json",
+                        headless=True, camera=5)
+                except SystemExit:
+                    pass
+        assert opened_with == ["clip.mp4"], opened_with
+    print(f"OK ({'cv2 capture patched' if have_cv2 else 'parse only'})")
+
     print("\nAll selftests passed.")
 
 
@@ -2649,7 +2796,24 @@ if __name__ == "__main__":
     ap.add_argument("--exercise", choices=sorted(SPECS) + ["auto"], default="squat",
                     help="exercise to coach, or 'auto' to detect from movement")
     ap.add_argument("--video", help="video file instead of webcam")
+    ap.add_argument("--camera", metavar="INDEX|PATH|URL",
+                    default=os.environ.get("COACH_CAMERA", "0"),
+                    help="which camera: index (0, 1, …), device path "
+                         "(/dev/video2) or stream URL (rtsp://…); "
+                         "see --list-devices (default 0, env COACH_CAMERA)")
+    ap.add_argument("--mic", metavar="INDEX|NAME",
+                    default=os.environ.get("COACH_MIC", ""),
+                    help="microphone for --coach voice input: sounddevice "
+                         "index or a part of its name (default: OS default, "
+                         "env COACH_MIC)")
+    ap.add_argument("--list-devices", action="store_true",
+                    help="show cameras, microphones and speakers this "
+                         "machine has, then exit (python coach_devices.py "
+                         "--ble adds a heart-rate strap scan)")
     ap.add_argument("--no-voice", action="store_true", help="disable TTS voice")
+    ap.add_argument("--no-mirror", action="store_true",
+                    help="don't mirror the webcam image (default: mirrored "
+                         "like a gym mirror; 'm' in the window toggles)")
     ap.add_argument("--headless", action="store_true",
                     help="no GUI window (Docker/servers); requires --video "
                          "or Ctrl+C to stop a webcam session")
@@ -2724,6 +2888,9 @@ if __name__ == "__main__":
                  "raw session windows (use --export-eval to feed it)")
     if args.selftest:
         selftest()
+    elif args.list_devices:
+        import coach_devices
+        coach_devices.print_report()
     elif args.stats:
         print_stats(args.log_file)
     elif args.collect_report:
@@ -2749,9 +2916,24 @@ if __name__ == "__main__":
                 WorkoutProgram.parse(args.program)
             except ValueError as e:
                 sys.exit(f"--program: {e}")
+        import coach_devices
+        try:
+            camera = coach_devices.parse_camera(args.camera)
+        except ValueError as e:
+            sys.exit(f"--camera: {e}")
+        if args.mic:
+            if not args.coach:
+                print("(--mic only matters with --coach — ignored)")
+            else:
+                import coach_chat
+                try:
+                    coach_chat.set_mic(args.mic)
+                except ValueError as e:
+                    sys.exit(f"--mic: {e}")
         run(args.exercise, args.video, not args.no_voice, args.log_file,
             headless=args.headless, output=args.output, coach=args.coach,
             record_reference=args.record_reference,
             reference_file=args.reference_file, detector_kind=args.detector,
             model_file=args.model_file, collect=args.collect,
-            program=args.program, sensors=args.sensors)
+            program=args.program, sensors=args.sensors, camera=camera,
+            mirror=not args.no_mirror)

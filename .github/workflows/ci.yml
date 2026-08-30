@@ -45,6 +45,10 @@ jobs:
         run: uv run python coach_calendar.py --selftest
       - name: Run sensor fusion selftests
         run: uv run python coach_sensors.py --selftest
+      - name: Run device discovery selftests (camera/mic selection)
+        run: uv run python coach_devices.py --selftest
+      - name: Run HUD selftests (on-screen UI renders every state)
+        run: uv run python coach_hud.py --selftest
       - name: Cross-platform parity fixtures (Python side)
         run: uv run python parity_fixtures.py --selftest
       - name: Property-based invariants (seeded fuzz)
@@ -84,6 +88,10 @@ jobs:
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_calendar.py --selftest
       - name: Sensor fusion selftest inside container
         run: docker run --rm --entrypoint python ai-gym-coach:ci coach_sensors.py --selftest
+      - name: Device discovery selftest inside container
+        run: docker run --rm --entrypoint python ai-gym-coach:ci coach_devices.py --selftest
+      - name: HUD selftest inside container
+        run: docker run --rm --entrypoint python ai-gym-coach:ci coach_hud.py --selftest
       - name: Parity + property tests inside container
         run: |
           docker run --rm --entrypoint python ai-gym-coach:ci parity_fixtures.py --selftest

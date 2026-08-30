@@ -936,6 +936,30 @@ def voice_input_available() -> bool:
 _whisper_model = None
 _whisper_lock = threading.Lock()
 
+# Microphone used by push-to-talk and hands-free (sounddevice index; None =
+# the OS default). Set once via set_mic(); read wherever a stream opens.
+MIC_DEVICE: int | None = None
+
+
+def set_mic(spec: str | int | None) -> int | None:
+    """--mic SPEC -> select the microphone (index or part of the name).
+
+    Raises ValueError with the available inputs when nothing matches, so
+    the caller can exit with a useful message instead of recording from
+    the wrong device."""
+    global MIC_DEVICE
+    import coach_devices
+    MIC_DEVICE = coach_devices.resolve_audio_device(spec, kind="input")
+    if MIC_DEVICE is not None:
+        name = ""
+        try:
+            ins, _ = coach_devices.list_audio_devices()
+            name = next((d.name for d in ins if d.index == MIC_DEVICE), "")
+        except Exception:
+            pass
+        print(f"🎤 microphone: [{MIC_DEVICE}] {name}".rstrip())
+    return MIC_DEVICE
+
 # Whisper hallucinates these on noise-only audio — never treat as a question.
 _JUNK = {"you", "you.", "uh", "um", "bye.", "thank you.", "thanks.",
          "thank you very much.", "thanks for watching!",
@@ -1043,7 +1067,7 @@ def record_and_transcribe(seconds: float = LISTEN_SECONDS) -> str:
     rate = 16000
     print(f"🎤 listening for {seconds:.0f}s — speak now...")
     audio = sd.rec(int(seconds * rate), samplerate=rate, channels=1,
-                   dtype="float32")
+                   dtype="float32", device=MIC_DEVICE)
     sd.wait()
     if _whisper_model is None:
         print("(loading speech model — first time downloads ~150 MB)")
@@ -1139,7 +1163,8 @@ class HandsFreeListener:
         try:
             import sounddevice as sd
             stream = sd.InputStream(samplerate=self.RATE, channels=1,
-                                    dtype="float32", blocksize=self.BLOCK)
+                                    dtype="float32", blocksize=self.BLOCK,
+                                    device=MIC_DEVICE)
             stream.start()
         except Exception as e:
             print(f"(hands-free mic unavailable: {e})")
@@ -1364,6 +1389,8 @@ class BackgroundChat:
         self._busy = False
         self._ptt = threading.Lock()   # one push-to-talk recording at a time
         self._q: "queue.Queue[str]" = queue.Queue()
+        self.hud_user: str | None = None   # what the HUD's coach panel shows
+        self.hud_reply: str = ""
         self.listener: HandsFreeListener | None = None
         if hands_free:
             if voice_input_available():
@@ -1431,6 +1458,7 @@ class BackgroundChat:
             self._cancel.set()
             self.stop_speaking()
             print("\n(interrupted — switching to your new question)")
+        self.hud_user, self.hud_reply = text, ""
         self._q.put(text)
 
     def _app_message(self, kind: str, body: str) -> str:
@@ -1514,10 +1542,17 @@ class BackgroundChat:
         action produced data the model still needs (tool loop)."""
         buf = ""
         feedback: list[str] = []
+        is_app = getattr(self.coach, "is_app_message",
+                         lambda t: t.startswith("[APP "))
+        if is_app(text):               # proactive note, not an answer to you
+            self.hud_user, self.hud_reply = None, ""
+        shown = ""
         print("\n🏋️  Coach: ", end="", flush=True)
         for chunk in self.coach.ask_stream(text, cancel=self._cancel):
             print(chunk, end="", flush=True)
             buf += chunk
+            shown += chunk
+            self.hud_reply = parse_actions(shown)[0].strip() or self.hud_reply
             sents, buf = split_sentences(buf)
             for s in sents:
                 self._say_or_act(s, feedback)
@@ -2496,6 +2531,58 @@ def selftest():
     assert "WARNING" not in out.getvalue()
     print("ok")
 
+    print("22) --mic selects the sounddevice input for PTT and hands-free:",
+          end=" ")
+    import coach_devices
+    global MIC_DEVICE
+    fake_inputs = [coach_devices.AudioDevice(0, "Microphone (Camo)", "input", 1),
+                   coach_devices.AudioDevice(3, "Headset Mic", "input", 1,
+                                             default=True)]
+    _resolve = coach_devices.resolve_audio_device
+    with mock.patch.object(coach_devices, "resolve_audio_device",
+                           side_effect=lambda spec, kind="input", devices=None:
+                           _resolve(spec, kind, devices=fake_inputs)), \
+            mock.patch.object(coach_devices, "list_audio_devices",
+                              return_value=(fake_inputs, [])):
+        with redirect_stdout(io.StringIO()) as out:
+            assert set_mic("camo") == 0 and MIC_DEVICE == 0
+        assert "Microphone (Camo)" in out.getvalue()
+        with redirect_stdout(io.StringIO()):
+            assert set_mic("3") == 3 and MIC_DEVICE == 3
+            assert set_mic("") is None and MIC_DEVICE is None
+        try:
+            set_mic("webcam")
+            raise AssertionError("unknown mic accepted")
+        except ValueError as e:
+            assert "Headset Mic" in str(e)
+        assert MIC_DEVICE is None          # a failed selection changes nothing
+        # the chosen index reaches every sounddevice call
+        opened = []
+
+        class FakeStream:
+            def __init__(self, **kw): opened.append(kw.get("device"))
+            def start(self): raise RuntimeError("stop here")
+        fake_sd = mock.MagicMock()
+        fake_sd.InputStream = FakeStream
+        fake_sd.rec = lambda *a, **kw: (opened.append(kw.get("device")),
+                                        __import__("numpy").zeros((16, 1),
+                                                                  "float32"))[1]
+        with redirect_stdout(io.StringIO()):
+            set_mic("camo")
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}), \
+                mock.patch.object(sys.modules[__name__], "_transcribe_audio",
+                                  return_value="hi"), \
+                redirect_stdout(io.StringIO()):
+            assert record_and_transcribe(0.01) == "hi"
+            lst = HandsFreeListener(on_text=lambda t: None)
+            for _ in range(50):
+                if lst.state == "off":
+                    break
+                time.sleep(0.02)
+        assert opened == [0, 0], opened
+        MIC_DEVICE = None
+    print("OK")
+
     print("\nAll coach_chat selftests passed.")
 
 
@@ -2516,6 +2603,13 @@ if __name__ == "__main__":
     ap.add_argument("--hands-free", action="store_true",
                     help="open-mic conversation: just speak, no keys "
                          "(needs voice extras)")
+    ap.add_argument("--mic", metavar="INDEX|NAME",
+                    default=os.environ.get("COACH_MIC", ""),
+                    help="microphone for --listen/--hands-free: sounddevice "
+                         "index or a part of its name (default: OS default, "
+                         "env COACH_MIC; see --list-devices)")
+    ap.add_argument("--list-devices", action="store_true",
+                    help="show microphones, speakers and cameras, then exit")
     ap.add_argument("--once", metavar="QUESTION",
                     help="ask one question, print the answer, exit")
     ap.add_argument("--profile-file", default=coach_profile.DEFAULT_DB,
@@ -2534,6 +2628,9 @@ if __name__ == "__main__":
         coach_ops.configure(args.trace)
     if args.selftest:
         selftest()
+    elif args.list_devices:
+        import coach_devices
+        coach_devices.print_report()
     elif args.once:
         try:
             prof = (None if args.no_profile
@@ -2544,4 +2641,9 @@ if __name__ == "__main__":
         except CoachOffline as e:
             sys.exit(str(e))
     else:
+        if args.mic:
+            try:
+                set_mic(args.mic)
+            except ValueError as e:
+                sys.exit(f"--mic: {e}")
         interactive(args)

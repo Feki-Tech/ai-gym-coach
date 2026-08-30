@@ -39,6 +39,27 @@ from datetime import datetime
 
 # Bump when the coach's prompts change in a way that could move eval numbers.
 # The fingerprint catches every edit; the version says which one you meant.
+def local_no_proxy() -> None:
+    """Keep loopback traffic off a corporate HTTP(S)_PROXY.
+
+    urllib honours HTTP_PROXY/HTTPS_PROXY for *every* host, so on a machine
+    with a campus/office proxy the call to the Ollama container on
+    localhost:11434 would be sent to the proxy (403 / timeout) instead of
+    the container. Appending the loopback names to no_proxy is the standard
+    fix and leaves genuine remote backends (and Google Calendar) untouched."""
+    local = ("localhost", "127.0.0.1", "::1")
+    for key in ("no_proxy", "NO_PROXY"):
+        cur = os.environ.get(key, "")
+        have = {h.strip() for h in cur.split(",") if h.strip()}
+        if "*" in have:
+            continue
+        add = [h for h in local if h not in have]
+        if add:
+            os.environ[key] = ",".join([cur] + add if cur else add)
+
+
+local_no_proxy()
+
 PROMPT_VERSION = "coach-3.2"
 
 DEFAULT_TRACE = os.environ.get("COACH_TRACE", "")
