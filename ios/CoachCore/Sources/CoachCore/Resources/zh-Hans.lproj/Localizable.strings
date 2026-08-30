@@ -33,3 +33,19 @@
 "hint.side_head" = "侧面，摄像头与头部同高";
 "hint.side_45knee" = "侧面（膝盖跟踪用45°正面）";
 "hint.front" = "正面视角";
+
+/* Programs, goals, records */
+"program.reps_target" = "%ld 次";
+"program.hold_target" = "保持 %ld 秒";
+"program.set_done" = "第 %ld/%ld 组完成——休息 %ld 秒，然后第 %ld 组：%@。";
+"program.block_done" = "%@ 完成！休息 %ld 秒，然后 %@：%ld 组，每组 %@。";
+"program.complete" = "训练完成——这是最后一组。今天太棒了！";
+"program.start" = "训练计划：%@。首先 %@——%@。开始吧！";
+"program.next" = "下一项：%@ · 第 %ld/%ld 组 · %@";
+"coach.rest_over" = "休息结束——继续训练！";
+"coach.tempo_slower" = "下放慢一点——目标 %.0f 秒。";
+"coach.pr_reps" = "新纪录——%ld 次，史上最多！";
+"coach.goal_reached" = "%ld 次——目标达成！休息一下。";
+"pr.reps" = "单次训练最多次数：%ld";
+"pr.e1rm" = "估算 1RM：%.1f kg";
+"pr.hold" = "最长保持：%.0f 秒";

@@ -421,3 +421,12 @@ queues in `data/app_commands.jsonl` (`set_exercise`, `set_rep_goal`,
 `rest_timer`, `set_tempo`, `cues`, `set_load`, `start_program`,
 `stop_program`) — "Claude, give me 90 seconds" works from another window.
 Nothing leaves the machine unless the client you connect is remote.
+
+## The coach on your iPhone
+
+`python coach_server.py` puts this same coach — persona, retrieval,
+guardrails, tools — on your Wi‑Fi as a paired API; the iOS app talks to it
+by voice or text during a set, gets the proactive debriefs, and the coach's
+ACTION lines drive the phone's workout (exercise, rep goal, rest, tempo,
+cues, load, programs). Finished sets are uploaded into `workout_log.json`.
+Details: [IOS.md §8](IOS.md).

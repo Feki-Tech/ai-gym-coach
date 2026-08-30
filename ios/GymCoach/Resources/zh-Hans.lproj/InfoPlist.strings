@@ -2,3 +2,6 @@
 "NSCameraUsageDescription" = "AI 健身教练通过摄像头实时分析你的运动姿势。视频完全在本机处理，不会被存储或上传。";
 "NSHealthShareUsageDescription" = "AI Gym Coach 读取你的心率、静息心率、HRV、最大摄氧量、体重、身高、年龄、睡眠、步数、活动能量、锻炼分钟和体能训练，以个性化指导提示、心率区间和休息。数据仅在此 iPhone 上读取，绝不上传。";
 "NSHealthUpdateUsageDescription" = "AI Gym Coach 将每个完成的组作为力量训练保存到「健康」，计入你的健身圆环和历史记录。";
+"NSMicrophoneUsageDescription" = "按住麦克风按钮用语音向教练提问。音频在此 iPhone 上转写，只有文字会发送到你自己 Wi-Fi 上的教练服务器。";
+"NSSpeechRecognitionUsageDescription" = "语音识别将你的问题转换为文字发给教练。iPhone 支持时使用设备端识别。";
+"NSLocalNetworkUsageDescription" = "App 与同一 Wi-Fi 网络上的教练服务器（coach_server.py）通信，以回答问题并实时指导你。";

@@ -128,6 +128,13 @@ public final class FatigueMonitor {
         self.threshold = threshold
     }
 
+    /// New movement, new baseline.
+    public func reset() {
+        vels = []
+        warned = false
+        loss = 0.0
+    }
+
     /// Feed one rep's concentric velocity; true => fire fatigue cue.
     public func add(_ velocity: Double) -> Bool {
         vels.append(velocity)

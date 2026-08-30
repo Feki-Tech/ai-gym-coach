@@ -24,10 +24,20 @@ struct SummaryView: View {
                             row("Velocity loss", String(format: "%.0f %%", v))
                         }
                     }
+                    if let load = record.summary.loadKg {
+                        row("Load per rep", String(format: "%g kg", load))
+                        row("Volume", String(format: "%g kg", record.summary.volumeKg ?? 0))
+                        row("Estimated 1RM", String(format: "%.1f kg", record.summary.e1rmKg ?? 0))
+                    }
                     if let hr = record.summary.avgHr {
                         row("Heart rate", String(format: NSLocalizedString(
                             "avg %lld · peak %lld bpm", comment: ""),
                             hr, record.summary.peakHr ?? hr))
+                    }
+                }
+                if let prs = record.summary.prs, !prs.isEmpty {
+                    Section("Personal records") {
+                        ForEach(prs, id: \.self) { Label($0, systemImage: "trophy.fill").foregroundStyle(.orange) }
                     }
                 }
                 if !record.summary.faultCounts.isEmpty {

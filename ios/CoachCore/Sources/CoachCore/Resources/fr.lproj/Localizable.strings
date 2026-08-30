@@ -33,3 +33,19 @@
 "hint.side_head" = "profil, caméra à hauteur de tête";
 "hint.side_45knee" = "profil (45° de face pour les genoux)";
 "hint.front" = "vue de face";
+
+/* Programs, goals, records */
+"program.reps_target" = "%ld répétitions";
+"program.hold_target" = "%ld secondes de gainage";
+"program.set_done" = "Série %ld sur %ld terminée — repos %ld secondes, puis série %ld : %@.";
+"program.block_done" = "%@ terminé ! Repos %ld secondes, puis %@ : %ld séries de %@.";
+"program.complete" = "Séance terminée — c'était la dernière série. Superbe travail !";
+"program.start" = "Programme : %@. On commence par %@ — %@. C'est parti !";
+"program.next" = "ensuite : %@ · série %ld/%ld · %@";
+"coach.rest_over" = "Repos terminé — au travail !";
+"coach.tempo_slower" = "Plus lent à la descente — vise %.0f secondes.";
+"coach.pr_reps" = "Nouveau record — %ld répétitions, ton maximum !";
+"coach.goal_reached" = "Ça fait %ld — objectif atteint ! Repose-toi.";
+"pr.reps" = "record de répétitions par séance : %ld";
+"pr.e1rm" = "1RM estimé : %.1f kg";
+"pr.hold" = "plus long gainage : %.0f s";

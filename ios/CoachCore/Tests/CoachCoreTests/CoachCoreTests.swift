@@ -32,6 +32,56 @@ final class CoachCoreTests: XCTestCase {
         XCTAssertNil(legacy.summary.peakHr)
     }
 
+    // 1c) programs parse like the desktop and advance set by set
+    func testWorkoutProgram() throws {
+        let p = try WorkoutProgram.parse("squat 2x3 rest 5, push-up 1x2 rest 4, plank 1x5s")
+        XCTAssertEqual(p.blocks.count, 3)
+        XCTAssertEqual(p.blocks[0], ProgramBlock(exercise: "squat", sets: 2, reps: 3, holdS: nil, restS: 5))
+        XCTAssertEqual(p.blocks[1].exercise, "pushup")
+        XCTAssertEqual(p.blocks[2].holdS, 5)
+        XCTAssertEqual(p.status?.block, 1)
+        var r = p.onSetDone()
+        XCTAssertEqual(r.step, .same); XCTAssertEqual(r.restS, 5); XCTAssertEqual(p.status?.set, 2)
+        r = p.onSetDone()
+        XCTAssertEqual(r.step, .next); XCTAssertEqual(p.status?.exercise, "pushup")
+        r = p.onSetDone()
+        XCTAssertEqual(r.step, .next); XCTAssertEqual(p.status?.exercise, "plank")
+        r = p.onSetDone()
+        XCTAssertEqual(r.step, .done); XCTAssertNil(p.current)
+        XCTAssertThrowsError(try WorkoutProgram.parse("yoga 3x10"))
+        XCTAssertThrowsError(try WorkoutProgram.parse("squat 30x10"))
+        XCTAssertThrowsError(try WorkoutProgram.parse(""))
+        XCTAssertEqual(normalizeExercise("Overhead Press"), "shoulder_press")
+    }
+
+    // 1d) load → volume / e1RM, personal records
+    func testLoadAndRecords() throws {
+        let b = SessionBuilder()
+        for i in 1...5 {
+            b.addRep(RepEvent(count: i, duration: 2, eccentricS: 1, concentricS: 1,
+                              minAngle: 80, fullDepth: true), velocity: 30, loadKg: 60)
+        }
+        let rec = b.finish(exercise: "squat", durationS: 30)
+        XCTAssertEqual(rec.summary.volumeKg, 300)
+        XCTAssertEqual(rec.summary.e1rmKg!, 70, accuracy: 0.01)      // 60 × (1 + 5/30)
+        XCTAssertEqual(rec.reps[0].loadKg, 60)
+        let json = String(decoding: try JSONEncoder().encode(rec), as: UTF8.self)
+        XCTAssertTrue(json.contains("\"e1rm_kg\"") && json.contains("\"load_kg\":60"))
+        var bests = PersonalBests(history: [], exercise: "squat")
+        XCTAssertEqual(bests.records(in: rec), [])                      // first session: no PRs
+        bests = PersonalBests(history: [rec], exercise: "squat")
+        XCTAssertEqual(bests.reps, 5); XCTAssertEqual(bests.e1rmKg, 70)
+        let b2 = SessionBuilder()
+        for i in 1...6 {
+            b2.addRep(RepEvent(count: i, duration: 2, eccentricS: 1, concentricS: 1,
+                               minAngle: 80, fullDepth: true), velocity: 30, loadKg: 60)
+        }
+        let rec2 = b2.finish(exercise: "squat", durationS: 30)
+        let prs = bests.records(in: rec2)
+        XCTAssertEqual(prs.count, 2)                                    // reps 6 > 5, e1RM 72 > 70
+        XCTAssertEqual(rec2.withRecords(prs).summary.prs?.count, 2)
+    }
+
     // 2) One Euro reduces jitter on a noisy static hold
     func testOneEuroReducesJitter() {
         var rng = SystemRandomNumberGenerator()

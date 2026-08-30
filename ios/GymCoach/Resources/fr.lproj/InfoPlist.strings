@@ -2,3 +2,6 @@
 "NSCameraUsageDescription" = "AI Gym Coach analyse ta technique en direct grâce à la caméra. La vidéo est traitée entièrement sur cet appareil — jamais enregistrée ni envoyée.";
 "NSHealthShareUsageDescription" = "AI Gym Coach lit votre fréquence cardiaque, FC au repos, VFC, VO2 max, poids, taille, âge, sommeil, pas, énergie active, minutes d'exercice et entraînements pour personnaliser les consignes, les zones cardiaques et la récupération. Les données sont lues sur cet iPhone uniquement et jamais envoyées.";
 "NSHealthUpdateUsageDescription" = "AI Gym Coach enregistre chaque série terminée dans Santé comme entraînement de musculation afin qu'elle compte pour vos anneaux et votre historique Fitness.";
+"NSMicrophoneUsageDescription" = "Maintenez le bouton micro pour poser une question à votre coach à la voix. L'audio est transcrit sur cet iPhone et seul le texte est envoyé à votre propre serveur coach sur votre Wi-Fi.";
+"NSSpeechRecognitionUsageDescription" = "La reconnaissance vocale transforme votre question en texte pour le coach. La reconnaissance sur l'appareil est utilisée quand l'iPhone la prend en charge.";
+"NSLocalNetworkUsageDescription" = "L'app communique avec votre serveur coach (coach_server.py) sur le même réseau Wi-Fi pour répondre à vos questions et vous coacher en direct.";

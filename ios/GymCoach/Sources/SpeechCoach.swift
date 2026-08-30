@@ -31,6 +31,23 @@ final class SpeechCoach: NSObject, AVSpeechSynthesizerDelegate {
 
     func say(_ text: String) {
         guard pending < 2 else { return }        // drop cues if backlogged
+        speak(text)
+    }
+
+    /// Coach sentences are never dropped (unlike backlogged form cues).
+    func sayChat(_ text: String) {
+        speak(text)
+    }
+
+    /// Barge-in: cut the current utterance and the queue.
+    func stopSpeaking() {
+        synth.stopSpeaking(at: .immediate)
+        pending = 0
+    }
+
+    var isSpeaking: Bool { synth.isSpeaking }
+
+    private func speak(_ text: String) {
         pending += 1
         let u = AVSpeechUtterance(string: text)
         u.rate = 0.52
