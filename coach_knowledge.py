@@ -633,7 +633,7 @@ def selftest():
         assert kb.context_block("!!!", live_exercise=None) == ""
         print("OK")
 
-        print("5) exercise_lookup action → APP DATA the model can use:", end=" ")
+        print("5) exercise_lookup action -> APP DATA the model can use:", end=" ")
         _, fb = exercise_lookup(kb, {"do": "exercise_lookup", "query": "romanian deadlift"})
         assert fb.startswith("EXERCISE: Romanian Deadlift"), fb
         _, fb = exercise_lookup(kb, {"do": "exercise_lookup", "muscle": "glutes",
