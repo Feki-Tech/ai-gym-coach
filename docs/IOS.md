@@ -237,9 +237,11 @@ signed with a personal certificate, runs for **7 days**, then must be
 refreshed (AltStore does that automatically over Wi‑Fi). Free accounts are
 limited to 3 sideloaded apps and 10 app ids per week, and cannot use
 paid-only capabilities — that is why the sideload build hides **Sign in
-with Apple** (Google/Microsoft sign-in still work). HealthKit may be
-unavailable depending on the sideloader; the app then shows the error on
-the Health screen and everything else works.
+with Apple** (Google/Microsoft sign-in still work) and the **HealthKit**
+capability (personal certificates are usually refused it, and a sideloader
+fails the whole install when it can't provision an entitlement); the Health
+screen then reports the missing entitlement and everything else works. The
+IPA is ad-hoc signed so AltStore/Sideloadly can re-sign it.
 
 ### Route A — Windows PC (or Linux/macOS) + AltStore or Sideloadly
 

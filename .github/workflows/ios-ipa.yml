@@ -22,12 +22,17 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/GymCoach/project.yml --project ios/GymCoach
-      - name: Sideload variant — drop paid-only capabilities
-        # Sign in with Apple needs a paid membership; a personal team can't
-        # provision it. The app hides the button when SIDELOAD_BUILD=YES.
+      - name: Sideload variant — drop capabilities a free Apple ID can't provision
+        # Sign in with Apple needs a paid membership and HealthKit is usually
+        # refused for personal-team certificates; a sideloader (AltStore /
+        # Sideloadly) fails the whole install when it can't provision an
+        # entitlement, so the sideload build carries neither. The app hides
+        # the Apple button (SIDELOAD_BUILD=YES) and the Health screen shows
+        # the entitlement error instead of crashing.
         run: |
-          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.applesignin" \
-            ios/GymCoach/GymCoach.entitlements || true
+          for key in com.apple.developer.applesignin com.apple.developer.healthkit com.apple.developer.healthkit.access; do
+            /usr/libexec/PlistBuddy -c "Delete :$key" ios/GymCoach/GymCoach.entitlements || true
+          done
           cat ios/GymCoach/GymCoach.entitlements
       - name: Build for device (unsigned)
         run: >
@@ -50,6 +55,17 @@ jobs:
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           test -d "$APP"
           mkdir -p Payload && cp -R "$APP" Payload/
+          # Ad-hoc signature: sideloaders (AltStore, Sideloadly) read the
+          # existing signature + entitlements before re-signing with your
+          # Apple ID; a completely unsigned bundle makes them fail
+          # ("__init__() missing … 'orig'").
+          if [ -d "Payload/GymCoach.app/Frameworks" ]; then
+            find Payload/GymCoach.app/Frameworks -maxdepth 1 \( -name "*.framework" -o -name "*.dylib" \) \
+              -exec codesign --force --sign - --timestamp=none {} \;
+          fi
+          codesign --force --sign - --timestamp=none --generate-entitlement-der \
+            --entitlements ios/GymCoach/GymCoach.entitlements Payload/GymCoach.app
+          codesign -dv --entitlements - Payload/GymCoach.app 2>&1 | tail -12
           zip -qr GymCoach.ipa Payload
           ls -la GymCoach.ipa
           echo "Bundle: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
