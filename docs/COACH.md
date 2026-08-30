@@ -131,9 +131,10 @@ and in plain `python coach_chat.py` alike.
 
 ### Hands-free listening
 
-The HUD's third line shows the mic state:
+The coach panel (bottom-right of the window) shows the mic state and a
+live level meter next to your last question and the streaming answer:
 
-| `mic:` | Meaning |
+| status | Meaning |
 |---|---|
 | `listening` | open mic — just talk |
 | `hearing you...` | speech detected, recording your sentence |
@@ -141,6 +142,11 @@ The HUD's third line shows the mic state:
 | `answering...` | the coach is replying — **it cannot hear you now** |
 | `press c to talk` | voice extras not installed → push-to-talk only |
 | `off` | mic unavailable (see Troubleshooting) |
+
+Which microphone: the OS default, unless you pass `--mic 3` or
+`--mic "Camo"` (index or part of the name — `--list-devices` shows them; the
+`COACH_MIC` env var sets a permanent default). Works for both push-to-talk
+and hands-free, in `pose_coach.py --coach` and `coach_chat.py`.
 
 There is no echo cancellation: while the coach talks through your speakers
 the mic is gated so it never hears its own voice. To barge in, press `c`
@@ -165,8 +171,8 @@ During a workout (`--coach`) the coach doesn't just talk — ask it and it
 | Say something like | What happens |
 |---|---|
 | "switch me to squats" | app changes exercise (counter, form rules, reference rep reset) |
-| "let's do 10 reps" | rep goal set — HUD shows `reps: 3/10`, coach announces when you hit it |
-| "give me 90 seconds rest" | REST countdown on the HUD, "back to work" when it ends |
+| "let's do 10 reps" | rep goal set — the rep counter shows `3 /10` with a goal ring, coach announces when you hit it |
+| "give me 90 seconds rest" | full-screen REST countdown with what's next, "back to work" when it ends |
 | "make me lower in 3 seconds" | tempo target enforced — too-fast reps get a voice cue |
 | "stop correcting me" / "cues on" | mutes/unmutes the spoken form corrections |
 | "re-detect my exercise" | back to auto-detect mode |
@@ -184,8 +190,9 @@ A program is a list of blocks — `squat 3x10 rest 90, pushup 2x15 rest
 45, plank 2x40s rest 30` (`40s` = timed hold). Once one is running the
 app becomes the trainer: it counts every set, announces "Set 1 of 3
 done — rest 90 seconds", runs the countdown, switches exercises between
-blocks and celebrates when the session is complete. The HUD shows
-`program: block 1/3 squat set 2/3 (10 reps)` and the coach always knows
+blocks and celebrates when the session is complete. The exercise card
+shows `PROGRAM block 1/3 · squat · set 2/3 · 10 reps` with a progress bar
+per block, the rest screen says what's next, and the coach always knows
 where you are if you ask.
 
 You don't need the LLM for this — start one directly:
@@ -324,6 +331,8 @@ Environment variables (or CLI flags on `coach_chat.py`):
 | `COACH_LOG` | `workout_log.json` | history used for context |
 | `COACH_PROFILE_DB` | `coach_profile.db` | athlete profile the coach remembers you with |
 | `COACH_WHISPER_MODEL` | `base` | speech-recognition model size (`tiny`/`base`/`small`) |
+| `COACH_MIC` | OS default | microphone for voice input: sounddevice index or part of its name (`--mic`; `--list-devices` shows them) |
+| `COACH_CAMERA` | `0` | camera for `pose_coach.py`: index, `/dev/videoN` or stream URL (`--camera`) |
 | `COACH_MAX_TOKENS` | `300` | max reply length in tokens |
 | `COACH_TEMPERATURE` | `0.5` | sampling temperature — lower = steadier, more literal (Ollama's own default is 0.8) |
 | `COACH_SEED` | unset | integer seed for repeatable replies (the eval harness sets one) |
