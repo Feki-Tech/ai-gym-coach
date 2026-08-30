@@ -54,6 +54,7 @@ import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
 
+import coach_auth
 import coach_calendar
 import coach_knowledge
 import coach_ops
@@ -695,6 +696,20 @@ def execute_history_action(log_path: str, action: dict) -> tuple[str, str | None
 
 
 # ------------------------------------------------------- proactive events
+def _remember_identity(profile) -> None:
+    """After /login: the verified name and e-mail become profile facts."""
+    ident = coach_auth.load_identity()
+    if profile is None or not ident:
+        return
+    try:
+        if ident.get("name"):
+            profile.remember("identity", "name", ident["name"])
+        if ident.get("email"):
+            profile.remember("identity", "email", ident["email"])
+    except Exception:
+        pass
+
+
 def execute_knowledge_action(coach, action: dict) -> tuple[str, str | None]:
     """exercise_lookup / plate_calc → (spoken ack, [APP DATA] feedback)."""
     do = str(action.get("do", ""))
@@ -834,6 +849,12 @@ class ChatCoach:
                     parts.append(block)
             except Exception:
                 pass
+        try:
+            who = coach_auth.identity_prompt_block()
+            if who:
+                parts.append(who)
+        except Exception:
+            pass
         live = None
         if self.state_provider:
             try:
@@ -1507,6 +1528,10 @@ class BackgroundChat:
         if cmd_out is None:
             cmd_out = coach_knowledge.handle_command(
                 getattr(self.coach, "kb", None), text)
+        if cmd_out is None:
+            cmd_out = coach_auth.handle_command(text)
+            if cmd_out is not None and cmd_out.startswith("Signed in as"):
+                _remember_identity(getattr(self.coach, "profile", None))
         if cmd_out is not None:
             print("\n" + cmd_out)
             return
@@ -1757,6 +1782,11 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
     if on_action is not None:
         print("The coach can drive the app: ask it to switch exercise, set "
               "a rep goal, start a rest timer, set tempo or mute cues.")
+    ident = coach_auth.load_identity()
+    if ident:
+        print(coach_auth.describe(ident))
+    elif coach_auth.providers():
+        print("Sign in with /login google or /login microsoft (optional).")
     if coach.calendar is not None:
         print("📅 Google Calendar connected — ask the coach to check your "
               "week or book a training session. /calendar shows the agenda.")
@@ -1858,6 +1888,12 @@ def interactive(args):
                 print(f"(calendar error: {e})")
             continue
         cmd_out = coach_profile.handle_command(profile, text)
+        if cmd_out is None:
+            cmd_out = coach_knowledge.handle_command(getattr(coach, "kb", None), text)
+        if cmd_out is None:
+            cmd_out = coach_auth.handle_command(text)
+            if cmd_out is not None and cmd_out.startswith("Signed in as"):
+                _remember_identity(profile)
         if cmd_out is not None:
             print(cmd_out)
             continue

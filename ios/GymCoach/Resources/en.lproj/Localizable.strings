@@ -78,3 +78,16 @@
 "Saved as a Strength Training workout" = "Saved as a Strength Training workout";
 "Saving to Apple Health…" = "Saving to Apple Health…";
 "Connect Apple Health to save workouts and heart rate" = "Connect Apple Health to save workouts and heart rate";
+
+/* Account */
+"Account" = "Account";
+"Signed in" = "Signed in";
+"Sign in" = "Sign in";
+"Sign out" = "Sign out";
+"via %@" = "via %@";
+"Sign in with Google" = "Sign in with Google";
+"Sign in with Microsoft" = "Sign in with Microsoft";
+"Signing in…" = "Signing in…";
+"Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider." = "Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider.";
+"Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read." = "Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read.";
+"Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md)." = "Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md).";

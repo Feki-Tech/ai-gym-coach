@@ -78,3 +78,16 @@
 "Saved as a Strength Training workout" = "已保存为力量训练";
 "Saving to Apple Health…" = "正在保存到 Apple 健康…";
 "Connect Apple Health to save workouts and heart rate" = "连接 Apple 健康以保存体能训练和心率";
+
+/* Account */
+"Account" = "账户";
+"Signed in" = "已登录";
+"Sign in" = "登录";
+"Sign out" = "退出登录";
+"via %@" = "通过 %@";
+"Sign in with Google" = "使用 Google 登录";
+"Sign in with Microsoft" = "使用 Microsoft 登录";
+"Signing in…" = "正在登录…";
+"Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider." = "你的姓名和邮箱保存在此 iPhone 的钥匙串中并显示在摘要里。不会向提供方发送任何训练数据。";
+"Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read." = "可选。登录后你的姓名会显示在摘要中，并且同一账户可以打开你的进度仪表板。登录页面是提供方自己的页面，在安全的系统浏览器面板中；只读取你的姓名和邮箱。";
+"Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md)." = "为此构建配置 client id 后会显示 Google 和 Microsoft 登录（docs/AUTH.md）。";

@@ -13,6 +13,7 @@ Usage:
     python coach_dashboard.py --port 9000
     python coach_dashboard.py --export report.html # write a static file
     python coach_dashboard.py --demo               # preview with sample data
+    python coach_dashboard.py --auth               # sign in with Google/Microsoft first
     python coach_dashboard.py --export-csv sets.csv  # Strong/Hevy-style CSV
     python coach_dashboard.py --import-csv hevy.csv  # bring history from other apps
     python coach_dashboard.py --selftest
@@ -32,6 +33,7 @@ import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 # A corporate HTTP_PROXY would otherwise capture the selftest's own
 # localhost requests (403 from the proxy). Same rule as coach_ops.local_no_proxy.
@@ -594,8 +596,13 @@ def _spotlight(ls: dict) -> str:
     return f'<div class="spot">{head}<div class="stats">{stats_html}</div>{body}</div>'
 
 
-def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
+def render_html(agg: dict, log_path: str = "", refresh: bool = True,
+                user: dict | None = None) -> str:
     t = agg["totals"]
+    who = ""
+    if user and user.get("email"):
+        who = (f' · signed in as {html.escape(user.get("name") or user["email"])} '
+               f'(<a href="/logout">sign out</a>)')
     meta = '<meta http-equiv="refresh" content="60">' if refresh else ""
     head = (f'<!doctype html><html><head><meta charset="utf-8">{meta}'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -752,7 +759,7 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
               f'</footer>')
     return (head
             + "<h1>&#127947; AI Gym Coach &mdash; Progress</h1>"
-            + f'<div class="sub">last workout: {t["last_day"] or "?"}</div>'
+            + f'<div class="sub">last workout: {t["last_day"] or "?"}{who}</div>'
             + f'<div class="cards">{cards_html}</div>'
             + ("<h2>Last session <small>rep by rep</small></h2>" + spot if spot else "")
             + weekly_html
@@ -924,32 +931,92 @@ def import_csv(path: str, log_path: str) -> tuple[int, int]:
 # ---------------------------------------------------------------- server
 class _Handler(BaseHTTPRequestHandler):
     log_path = DEFAULT_LOG
+    auth = None                  # coach_auth.WebAuth when --auth is on
 
-    def do_GET(self):  # noqa: N802 (stdlib API name)
-        if self.path.split("?")[0] == "/data.json":
-            payload = json.dumps(aggregate(load_history(self.log_path)),
-                                 default=str).encode()
-            ctype = "application/json"
-        elif self.path.split("?")[0] == "/":
-            payload = render_html(aggregate(load_history(self.log_path)),
-                                  self.log_path).encode()
-            ctype = "text/html; charset=utf-8"
-        else:
-            self.send_error(404)
-            return
-        self.send_response(200)
+    # ---- helpers
+    def _send(self, payload: bytes, ctype: str, code: int = 200,
+              extra: list[tuple[str, str]] | None = None):
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(payload)))
+        for k, v in extra or []:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _redirect(self, location: str, extra=None):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        for k, v in extra or []:
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _secure(self) -> bool:
+        return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+
+    def _base_url(self) -> str:
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost"
+        return ("https" if self._secure() else "http") + "://" + host
+
+    def _session(self) -> dict | None:
+        if self.auth is None:
+            return {}                                # auth off: everyone is "in"
+        return self.auth.session(self.headers.get("Cookie"))
+
+    def do_GET(self):  # noqa: N802 (stdlib API name)
+        url = urlparse(self.path)
+        path, query = url.path, dict(parse_qsl(url.query))
+        auth = self.auth
+        if auth is not None:
+            import coach_auth
+            if path == "/login":
+                return self._send(auth.login_page(query.get("error", "")).encode(),
+                                  "text/html; charset=utf-8")
+            if path.startswith("/login/"):
+                try:
+                    return self._redirect(auth.start(path[len("/login/"):], self._base_url()))
+                except coach_auth.AuthError as e:
+                    return self._redirect("/login?" + urlencode({"error": str(e)}))
+            if path == "/auth/callback":
+                try:
+                    _, cookie = auth.finish(query)
+                except coach_auth.AuthError as e:
+                    return self._redirect("/login?" + urlencode({"error": str(e)}))
+                return self._redirect("/", [("Set-Cookie",
+                                             auth.cookie_headers(cookie, self._secure()))])
+            if path == "/logout":
+                return self._redirect("/login", [("Set-Cookie",
+                                                  auth.cookie_headers(None, self._secure()))])
+        session = self._session()
+        if session is None:
+            if path == "/data.json":
+                return self._send(b'{"error": "sign in first"}', "application/json", 401)
+            return self._redirect("/login")
+        if path == "/data.json":
+            payload = json.dumps(aggregate(load_history(self.log_path)),
+                                 default=str).encode()
+            return self._send(payload, "application/json")
+        if path == "/":
+            payload = render_html(aggregate(load_history(self.log_path)),
+                                  self.log_path, user=session or None).encode()
+            return self._send(payload, "text/html; charset=utf-8")
+        self.send_error(404)
 
     def log_message(self, *a):  # keep the console quiet
         pass
 
 
 def serve(log_path: str, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-          open_browser: bool = True) -> None:
-    handler = type("Handler", (_Handler,), {"log_path": log_path})
+          open_browser: bool = True, auth=None) -> None:
+    handler = type("Handler", (_Handler,), {"log_path": log_path, "auth": auth})
+    if auth is not None:
+        who = ", ".join(sorted(auth.allowed)) if auth.allowed else \
+            "any account of the configured providers"
+        print(f"Sign-in required ({', '.join(auth.providers)}); allowed: {who}")
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: serving beyond localhost without --auth — anyone on the "
+              "network can read your training log (docs/AUTH.md)")
     srv = ThreadingHTTPServer((host, port), handler)
     url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{srv.server_address[1]}/"
     print(f"Dashboard on {url}  (log: {log_path}) — Ctrl+C to stop")
@@ -1216,6 +1283,74 @@ def selftest() -> None:
         assert _parse_csv_date("2026-07-13 18:00:00") == "2026-07-13"
         assert _parse_csv_date("nope") is None
     print("ok 8 — CSV export/import (Strong/Hevy columns, unknown rows skipped)")
+
+    # 9 — --auth: redirects to /login, completes the OIDC flow, sets a cookie
+    import urllib.error
+    import urllib.request
+    import http.cookiejar
+    import coach_auth
+    n, e, d = coach_auth._test_rsa_key()
+    fp = coach_auth._FakeProvider(n, e, d)
+    fp.start()
+    try:
+        web = coach_auth.WebAuth({"google": fp.provider()}, allowed={"ath@example.com"},
+                                 signer=coach_auth.SessionSigner("t", ttl_s=60))
+        with tempfile.TemporaryDirectory() as td:
+            log = os.path.join(td, "log.json")
+            with open(log, "w", encoding="utf-8") as fh:
+                json.dump(_fake_history(), fh)
+            handler = type("H", (_Handler,), {"log_path": log, "auth": web})
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{srv.server_address[1]}"
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k):
+                    return None
+            plain = urllib.request.build_opener(NoRedirect())
+            try:
+                plain.open(base + "/", timeout=5)
+                raise AssertionError("page served without a session")
+            except urllib.error.HTTPError as err:
+                assert err.code == 302 and err.headers["Location"] == "/login"
+            try:
+                plain.open(base + "/data.json", timeout=5)
+                raise AssertionError("api served without a session")
+            except urllib.error.HTTPError as err:
+                assert err.code == 401
+            with opener.open(base + "/login", timeout=5) as r:
+                assert b"Sign in with Fake" in r.read()
+            try:
+                plain.open(base + "/login/google", timeout=5)
+                raise AssertionError("expected redirect to the provider")
+            except urllib.error.HTTPError as err:
+                auth_url = err.headers["Location"]
+            q = dict(parse_qsl(urlparse(auth_url).query))
+            assert q["redirect_uri"] == base + "/auth/callback"
+            assert q["code_challenge_method"] == "S256"
+            code = "c0de"
+            fp.codes[code] = q["nonce"]
+            with opener.open(base + "/auth/callback?"
+                             + urlencode({"code": code, "state": q["state"]}), timeout=5) as r:
+                page = r.read()
+            assert b"signed in as Ath Lete" in page and b"Progress" in page
+            assert any(c.name == coach_auth.WebAuth.COOKIE for c in jar)
+            with opener.open(base + "/data.json", timeout=5) as r:
+                assert json.loads(r.read())["totals"]["sessions"] == 5
+            with opener.open(base + "/logout", timeout=5) as r:
+                assert b"Sign in" in r.read()                       # back on /login
+            try:
+                plain.open(base + "/auth/callback?code=x&state=forged", timeout=5)
+                raise AssertionError("forged state accepted")
+            except urllib.error.HTTPError as err:
+                assert err.code == 302 and "error=" in err.headers["Location"]
+            srv.shutdown()
+            srv.server_close()
+    finally:
+        fp.stop()
+    print("ok 9 — --auth gate (redirect, OIDC callback, cookie, logout, forged state)")
     print("All dashboard selftests passed.")
 
 
@@ -1235,6 +1370,11 @@ def main() -> None:
                     help="serve synthetic demo history instead of a real log "
                          "(what the hosted demo runs — real data never leaves "
                          "your machine)")
+    ap.add_argument("--auth", action="store_true",
+                    help="require signing in with Google or Microsoft (env "
+                         "COACH_DASHBOARD_AUTH=1; providers from COACH_GOOGLE_CLIENT_ID "
+                         "/ COACH_MICROSOFT_CLIENT_ID, allow-list COACH_ALLOWED_EMAILS; "
+                         "docs/AUTH.md)")
     ap.add_argument("--export-csv", metavar="FILE",
                     help="write the log as a Strong/Hevy-style CSV and exit")
     ap.add_argument("--import-csv", metavar="FILE",
@@ -1268,7 +1408,14 @@ def main() -> None:
             fh.write(page)
         print(f"Wrote {args.export}")
         return
-    serve(args.log, args.host, args.port, open_browser=not args.no_browser)
+    auth = None
+    if args.auth or os.environ.get("COACH_DASHBOARD_AUTH", "") not in ("", "0", "false"):
+        import coach_auth
+        provs = coach_auth.providers()
+        if not provs:
+            sys.exit(coach_auth.SETUP_HELP)
+        auth = coach_auth.WebAuth(provs, allowed=coach_auth.WebAuth.allowed_from_env())
+    serve(args.log, args.host, args.port, open_browser=not args.no_browser, auth=auth)
 
 
 if __name__ == "__main__":

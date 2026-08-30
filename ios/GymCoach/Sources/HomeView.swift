@@ -3,6 +3,7 @@ import CoachCore
 
 struct HomeView: View {
     @State private var voiceOn = true
+    @ObservedObject private var auth = AuthService.shared
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
 
     var body: some View {
@@ -35,6 +36,15 @@ struct HomeView: View {
                         Image(systemName: "heart.fill")
                     }
                     .accessibilityLabel("Apple Health")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    NavigationLink {
+                        AccountView()
+                    } label: {
+                        Image(systemName: auth.identity == nil
+                              ? "person.crop.circle" : "person.crop.circle.fill")
+                    }
+                    .accessibilityLabel("Account")
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {

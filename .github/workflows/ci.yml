@@ -53,6 +53,8 @@ jobs:
         run: uv run python coach_knowledge.py --selftest
       - name: Run MCP server selftests
         run: uv run python coach_mcp.py --selftest
+      - name: Run sign-in (OIDC/PKCE) selftests
+        run: uv run python coach_auth.py --selftest
       - name: Cross-platform parity fixtures (Python side)
         run: uv run python parity_fixtures.py --selftest
       - name: Property-based invariants (seeded fuzz)
@@ -100,6 +102,7 @@ jobs:
         run: |
           docker run --rm --entrypoint python ai-gym-coach:ci coach_knowledge.py --selftest
           docker run --rm --entrypoint python ai-gym-coach:ci coach_mcp.py --selftest
+          docker run --rm --entrypoint python ai-gym-coach:ci coach_auth.py --selftest
       - name: Parity + property tests inside container
         run: |
           docker run --rm --entrypoint python ai-gym-coach:ci parity_fixtures.py --selftest

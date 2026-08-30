@@ -55,15 +55,31 @@ targets:
         LSApplicationQueriesSchemes:
           - x-apple-health
           - fitnessapp
+        # Sign-in client ids come from build settings (never from source):
+        #   xcodebuild … COACH_GOOGLE_IOS_CLIENT_ID=123-abc.apps.googleusercontent.com
+        #                COACH_MICROSOFT_CLIENT_ID=<app id> [COACH_MICROSOFT_TENANT=common]
+        # Empty = that provider's button is hidden (Sign in with Apple stays).
+        GoogleClientID: $(COACH_GOOGLE_IOS_CLIENT_ID)
+        MicrosoftClientID: $(COACH_MICROSOFT_CLIENT_ID)
+        MicrosoftTenant: $(COACH_MICROSOFT_TENANT)
+        CFBundleURLTypes:
+          - CFBundleURLName: msauth
+            CFBundleURLSchemes:
+              - msauth.$(PRODUCT_BUNDLE_IDENTIFIER)
         ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: GymCoach.entitlements
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
+        com.apple.developer.applesignin:
+          - Default
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.fekitech.gymcoach
+        COACH_GOOGLE_IOS_CLIENT_ID: ""
+        COACH_MICROSOFT_CLIENT_ID: ""
+        COACH_MICROSOFT_TENANT: common
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
