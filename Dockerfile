@@ -18,9 +18,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-emit-project --no-hashes -o /tmp/req.txt \
  && uv pip install --system --no-cache -r /tmp/req.txt
 
-COPY pose_coach.py coach_chat.py coach_profile.py coach_calendar.py coach_dashboard.py coach_sensors.py coach_ops.py coach_eval.py coach_devices.py coach_hud.py parity_fixtures.py prop_tests.py ./
+COPY pose_coach.py coach_chat.py coach_profile.py coach_calendar.py coach_dashboard.py coach_sensors.py coach_ops.py coach_eval.py coach_devices.py coach_hud.py coach_knowledge.py coach_mcp.py coach_auth.py parity_fixtures.py prop_tests.py ./
 # coach eval scenarios (docs/LLMOPS.md) — data/ is otherwise a runtime mount
-COPY data/coach_evals.jsonl data/parity_fixtures.json data/
+COPY data/coach_evals.jsonl data/parity_fixtures.json data/exercises.json data/
+COPY data/knowledge data/knowledge
 # bake the pose model into the image so containers run offline
 RUN python -c "import pose_coach; pose_coach.ensure_model()"
 

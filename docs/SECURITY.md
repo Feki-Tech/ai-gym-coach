@@ -260,3 +260,18 @@ S11.
 - A user who sets `COACH_LLM_BASE_URL` to a hosted API and acknowledges
   the notice has chosen to send their data there — the app tells them
   exactly what goes; it does not stop them.
+
+## 8. Sign-in (coach_auth.py) — addendum
+
+Identity is optional and adds one trust boundary: the OpenID provider
+(Google / Microsoft). Mitigations, all tested offline against an in-process
+fake provider: system browser + loopback redirect (RFC 8252), PKCE S256
+(RFC 7636), `state` checked in constant time before any token request,
+`nonce` bound into the ID token, RS256 signature verification against the
+provider JWKS with `iss`/`aud`/`exp`/`iat` checks, `alg` pinned. The
+dashboard session is an HMAC-signed, HttpOnly, SameSite=Lax cookie (Secure
+behind https) with an e-mail allow-list; forged, tampered and expired
+cookies are rejected. Stored locally: `coach_identity.json` (0600) — same
+trust level as the profile database. Accepted risk: a Google "Desktop app"
+client secret is embedded in local config as Google requires; it grants no
+access on its own (PKCE + redirect binding still apply). Details: AUTH.md.

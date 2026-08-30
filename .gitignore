@@ -46,3 +46,12 @@ ios/**/DerivedData/
 ios/**/xcuserdata/
 *.xcresult
 
+
+# MCP bridge runtime files (coach_mcp.py)
+data/live_state.json
+data/live_state.json.tmp
+data/app_commands.jsonl
+
+# sign-in identity (coach_auth.py) — personal, never committed
+coach_identity.json
+coach_identity.json.tmp

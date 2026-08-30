@@ -78,3 +78,16 @@
 "Saved as a Strength Training workout" = "تم الحفظ كتمرين قوة";
 "Saving to Apple Health…" = "جارٍ الحفظ في صحة Apple…";
 "Connect Apple Health to save workouts and heart rate" = "اربط صحة Apple لحفظ التمارين ومعدل ضربات القلب";
+
+/* Account */
+"Account" = "الحساب";
+"Signed in" = "تم تسجيل الدخول";
+"Sign in" = "تسجيل الدخول";
+"Sign out" = "تسجيل الخروج";
+"via %@" = "عبر %@";
+"Sign in with Google" = "تسجيل الدخول باستخدام Google";
+"Sign in with Microsoft" = "تسجيل الدخول باستخدام Microsoft";
+"Signing in…" = "جارٍ تسجيل الدخول…";
+"Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider." = "يُحفظ اسمك وبريدك الإلكتروني في سلسلة مفاتيح هذا الـ iPhone ويظهران في ملخصاتك. لا يُرسل أي شيء عن تدريبك إلى المزوّد.";
+"Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read." = "اختياري. يضع تسجيل الدخول اسمك على ملخصاتك ويتيح للحساب نفسه فتح لوحة التقدم. صفحة تسجيل الدخول هي صفحة المزوّد نفسها ضمن نافذة متصفح النظام الآمنة؛ يُقرأ اسمك وبريدك الإلكتروني فقط.";
+"Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md)." = "يظهر تسجيل الدخول عبر Google وMicrosoft عند ضبط معرّف عميل لهذا الإصدار (docs/AUTH.md).";

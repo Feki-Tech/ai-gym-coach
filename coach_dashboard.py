@@ -13,6 +13,9 @@ Usage:
     python coach_dashboard.py --port 9000
     python coach_dashboard.py --export report.html # write a static file
     python coach_dashboard.py --demo               # preview with sample data
+    python coach_dashboard.py --auth               # sign in with Google/Microsoft first
+    python coach_dashboard.py --export-csv sets.csv  # Strong/Hevy-style CSV
+    python coach_dashboard.py --import-csv hevy.csv  # bring history from other apps
     python coach_dashboard.py --selftest
 
 The page re-reads the log on every refresh, so you can keep it open while
@@ -21,6 +24,7 @@ you train (it auto-refreshes every 60 s).
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import html
 import json
@@ -29,6 +33,7 @@ import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 # A corporate HTTP_PROXY would otherwise capture the selftest's own
 # localhost requests (403 from the proxy). Same rule as coach_ops.local_no_proxy.
@@ -73,6 +78,38 @@ def fault_name(key: str) -> str:
 
 def exercise_name(key: str) -> str:
     return EXERCISE_NAMES.get(key, key.replace("_", " "))
+
+
+MUSCLE_GROUPS = {   # catalogue muscle names → dashboard groups
+    "quadriceps": "quads", "hamstrings": "hamstrings", "glutes": "glutes",
+    "calves": "calves", "abductors": "hips", "adductors": "hips",
+    "chest": "chest", "triceps": "triceps", "biceps": "biceps",
+    "forearms": "forearms", "shoulders": "shoulders", "lats": "back",
+    "middle back": "back", "lower back": "lower back", "traps": "back",
+    "neck": "neck", "abdominals": "core",
+}
+
+
+def muscles_for(exercise: str) -> list[str]:
+    """Muscle groups an app exercise works (catalogue-backed; falls back to
+    a built-in table so the page never needs the download)."""
+    try:
+        import coach_knowledge
+        names = coach_knowledge.default_kb().muscles_for(exercise)
+    except Exception:
+        names = []
+    if not names:
+        try:
+            import coach_knowledge
+            names = coach_knowledge.APP_MUSCLES.get(exercise, [])
+        except Exception:
+            names = []
+    out = []
+    for n in names:
+        g = MUSCLE_GROUPS.get(str(n).lower(), str(n).lower())
+        if g not in out:
+            out.append(g)
+    return out
 
 
 def score_color(score) -> str:
@@ -148,6 +185,8 @@ def session_detail(s: dict) -> dict:
         "avg_similarity": summ.get("avg_similarity"),
         "velocity_loss_pct": summ.get("velocity_loss_pct"),
         "avg_hr": summ.get("avg_hr"), "peak_hr": summ.get("peak_hr"),
+        "load_kg": summ.get("load_kg"), "volume_kg": summ.get("volume_kg"),
+        "e1rm_kg": summ.get("e1rm_kg"), "prs": summ.get("prs") or [],
         "fault_counts": {fault_name(k): v for k, v in
                          (summ.get("fault_counts") or {}).items()},
         "plank": plank,
@@ -166,6 +205,10 @@ def aggregate(history: list[dict]) -> dict:
     scores_by_session: list[float] = []
     sims: list[float] = []
     hrs: list[float] = []
+    muscle_7d: dict[str, int] = {}          # sets (sessions) per group, last 7 days
+    muscle_last: dict[str, dt.date] = {}    # last time a group was trained
+    prs_total = 0
+    today = dt.date.today()
 
     for s in history:
         summ = s.get("summary") or {}
@@ -179,8 +222,8 @@ def aggregate(history: list[dict]) -> dict:
         totals["reps"] += reps
         totals["duration_s"] += s.get("duration_s") or 0.0
         totals["hold_s"] += hold
-        best_rep = max((r.get("score", 0) for r in s.get("reps", [])),
-                       default=None)
+        best_rep = max((r.get("score") for r in s.get("reps", [])
+                        if r.get("score") is not None), default=None)
         if best_rep is not None:
             if totals["best_score"] is None or best_rep > totals["best_score"]:
                 totals["best_score"] = best_rep
@@ -190,6 +233,14 @@ def aggregate(history: list[dict]) -> dict:
             sims.append(summ["avg_similarity"])
         if summ.get("avg_hr"):
             hrs.append(summ["avg_hr"])
+        prs_total += len(summ.get("prs") or [])
+        totals["volume_kg"] = totals.get("volume_kg", 0.0) + (summ.get("volume_kg") or 0.0)
+        if date and (reps or hold):
+            for g in muscles_for(ex):
+                if (today - date).days < 7:
+                    muscle_7d[g] = muscle_7d.get(g, 0) + 1
+                if g not in muscle_last or date > muscle_last[g]:
+                    muscle_last[g] = date
 
         if date:
             days.append(date)
@@ -205,7 +256,7 @@ def aggregate(history: list[dict]) -> dict:
         e = exercises.setdefault(ex, {
             "sessions": 0, "total_reps": 0, "scores": [], "reps_series": [],
             "holds": [], "faults": {}, "prs": {}, "similarity": [],
-            "tempo": []})
+            "tempo": [], "volume": [], "e1rm": [], "muscles": muscles_for(ex)})
         e["sessions"] += 1
         e["total_reps"] += reps
         label = date.isoformat() if date else "?"
@@ -222,6 +273,10 @@ def aggregate(history: list[dict]) -> dict:
         if summ.get("avg_concentric_s") is not None:
             e["tempo"].append({"label": label,
                                "value": summ["avg_concentric_s"]})
+        if summ.get("volume_kg"):
+            e["volume"].append({"label": label, "value": summ["volume_kg"]})
+        if summ.get("e1rm_kg"):
+            e["e1rm"].append({"label": label, "value": summ["e1rm_kg"]})
         for k, v in (summ.get("fault_counts") or {}).items():
             e["faults"][k] = e["faults"].get(k, 0) + v
 
@@ -244,6 +299,10 @@ def aggregate(history: list[dict]) -> dict:
             prs["best_avg_score"] = max(p["value"] for p in e["scores"])
         if e["holds"]:
             prs["longest_hold_s"] = max(p["value"] for p in e["holds"])
+        if e["e1rm"]:
+            prs["best_e1rm_kg"] = max(p["value"] for p in e["e1rm"])
+        if e["volume"]:
+            prs["max_volume_kg"] = max(p["value"] for p in e["volume"])
 
     current, longest = _streaks(days)
     totals["streak"] = current
@@ -257,6 +316,17 @@ def aggregate(history: list[dict]) -> dict:
                              if last5 and prev5 else None)
     totals["avg_similarity"] = _mean(sims)
     totals["avg_hr"] = round(_mean(hrs)) if hrs else None
+    totals["prs"] = prs_total
+    totals["volume_kg"] = round(totals.get("volume_kg", 0.0), 1)
+    recovery = []
+    for g in sorted(set(muscle_last) | set(muscle_7d)):
+        days_since = (today - muscle_last[g]).days if g in muscle_last else None
+        recovery.append({"muscle": g, "sessions_7d": muscle_7d.get(g, 0),
+                         "days_since": days_since,
+                         "status": ("recovering" if days_since is not None
+                                    and days_since < 2 else
+                                    "ready" if days_since is not None
+                                    and days_since <= 7 else "detraining")})
 
     weeks = sorted(weekly)[-12:]
     return {
@@ -266,6 +336,7 @@ def aggregate(history: list[dict]) -> dict:
         "recent": list(reversed(recent))[:10],
         "day_reps": day_reps,
         "last_session": session_detail(history[-1]) if history else None,
+        "recovery": recovery,
     }
 
 
@@ -425,6 +496,16 @@ th { color: var(--muted); font-weight: 600; }
 code { background: var(--chart); border: 1px solid var(--line); border-radius: 5px;
        padding: 1px 6px; font-size: 13px; }
 footer { margin-top: 32px; }
+.muscles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 8px; }
+.muscle { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 10px 12px; font-size: 13px; }
+.muscle b { text-transform: capitalize; }
+.muscle .bar { height: 6px; border-radius: 3px; background: var(--chart); margin: 6px 0 4px;
+               overflow: hidden; }
+.muscle .bar i { display: block; height: 100%; background: #4ade80; }
+.ready { color: #4ade80; } .recovering { color: #fbbf24; } .detraining { color: #94a3b8; }
+.pr { background: #fbbf2422; border-color: #fbbf24; color: #fbbf24; }
 """
 
 
@@ -473,9 +554,15 @@ def _spotlight(ls: dict) -> str:
         if vl is not None:
             stats.append((f"-{vl:g}%", "speed loss (fatigue)" if vl > 20
                           else "speed loss", WARN if vl > 20 else ACCENT))
+    if ls.get("volume_kg"):
+        stats.append((f'{ls["load_kg"]:g} kg', "load per rep", "var(--text)"))
+        stats.append((f'{ls["volume_kg"]:g} kg', "volume", ACCENT2))
+        stats.append((f'{ls["e1rm_kg"]:g} kg', "estimated 1RM (Epley)", ACCENT))
     if ls["avg_hr"]:
         stats.append((f'{ls["avg_hr"]}', f'avg bpm · peak {ls["peak_hr"]}', WARN))
-    stats_html = "".join(
+    stats_html = "".join(f'<span class="chip pr">🏆 PR — {html.escape(p)}</span>'
+                         for p in ls.get("prs") or [])
+    stats_html += "".join(
         f'<div class="stat"><div class="v" style="color:{c}">{html.escape(v)}</div>'
         f'<div class="l">{html.escape(l)}</div></div>' for v, l, c in stats)
     body = ""
@@ -509,8 +596,13 @@ def _spotlight(ls: dict) -> str:
     return f'<div class="spot">{head}<div class="stats">{stats_html}</div>{body}</div>'
 
 
-def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
+def render_html(agg: dict, log_path: str = "", refresh: bool = True,
+                user: dict | None = None) -> str:
     t = agg["totals"]
+    who = ""
+    if user and user.get("email"):
+        who = (f' · signed in as {html.escape(user.get("name") or user["email"])} '
+               f'(<a href="/logout">sign out</a>)')
     meta = '<meta http-equiv="refresh" content="60">' if refresh else ""
     head = (f'<!doctype html><html><head><meta charset="utf-8">{meta}'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -542,6 +634,12 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
         cards.append((t["best_score"], "best rep score", ""))
     if t["avg_similarity"] is not None:
         cards.append((f'{t["avg_similarity"]:g}%', "avg vs golden rep", "amber"))
+    if t.get("volume_kg"):
+        v = t["volume_kg"]
+        cards.append((f"{v / 1000:.1f} t" if v >= 10000 else f"{v:g} kg",
+                      "total volume lifted", "blue"))
+    if t.get("prs"):
+        cards.append((f'🏆 {t["prs"]}', "personal records", "amber"))
     if t["avg_hr"]:
         cards.append((t["avg_hr"], "avg heart rate", "red"))
     if t["hold_s"]:
@@ -561,6 +659,21 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
                        + svg_bars(week_pts, height=150)
                        + f'<div class="small">last {len(weekly)} training '
                          f'week(s) &mdash; hover a bar for details</div>')
+    rec_html = ""
+    if agg.get("recovery"):
+        hi = max((r["sessions_7d"] for r in agg["recovery"]), default=1) or 1
+        boxes = []
+        for r in agg["recovery"]:
+            since = ("today" if r["days_since"] == 0 else
+                     f'{r["days_since"]}d ago' if r["days_since"] is not None else "never")
+            boxes.append(
+                f'<div class="muscle"><b>{html.escape(r["muscle"])}</b> '
+                f'<span class="{r["status"]}">{r["status"]}</span>'
+                f'<div class="bar"><i style="width:{r["sessions_7d"] / hi * 100:.0f}%"></i></div>'
+                f'<span class="small">{r["sessions_7d"]} set(s) this week · last {since}</span></div>')
+        rec_html = ("<h2>Muscles <small>sets in the last 7 days · recovering = "
+                    "trained &lt;48 h ago · ready = 2–7 days · detraining = over a "
+                    "week</small></h2>" + f'<div class="muscles">{"".join(boxes)}</div>')
     heat_html = ""
     if agg.get("day_reps"):
         heat_html = ("<h2>Training days <small>last 16 weeks, darker = more reps"
@@ -582,6 +695,12 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
         if "longest_hold_s" in prs:
             chips.append(f'<span class="chip">PR <b>{prs["longest_hold_s"]:g}s'
                          f'</b> hold</span>')
+        if "best_e1rm_kg" in prs:
+            chips.append(f'<span class="chip">PR <b>{prs["best_e1rm_kg"]:g} kg'
+                         f'</b> est. 1RM</span>')
+        if e.get("muscles"):
+            chips.append('<span class="chip">' + " · ".join(
+                html.escape(m) for m in e["muscles"][:4]) + "</span>")
         body = ""
         if len(e["scores"]) > 1:
             body += ('<div class="small">avg form score per session (0–100)</div>'
@@ -592,6 +711,12 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
         if len(e["similarity"]) > 1:
             body += ('<div class="small">similarity to your golden rep (%)</div>'
                      + svg_line(e["similarity"], color=AMBER, lo=0, hi=100, unit="%"))
+        if len(e["e1rm"]) > 1:
+            body += ('<div class="small">estimated 1RM per session (kg)</div>'
+                     + svg_line(e["e1rm"], color=ACCENT, lo=0, unit=" kg"))
+        if len(e["volume"]) > 1:
+            body += ('<div class="small">volume per session (kg)</div>'
+                     + svg_bars(e["volume"], unit=" kg"))
         if len(e["tempo"]) > 1:
             body += ('<div class="small">avg lift time per session (s)</div>'
                      + svg_line(e["tempo"], color=ACCENT2, lo=0, unit="s"))
@@ -634,10 +759,11 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
               f'</footer>')
     return (head
             + "<h1>&#127947; AI Gym Coach &mdash; Progress</h1>"
-            + f'<div class="sub">last workout: {t["last_day"] or "?"}</div>'
+            + f'<div class="sub">last workout: {t["last_day"] or "?"}{who}</div>'
             + f'<div class="cards">{cards_html}</div>'
             + ("<h2>Last session <small>rep by rep</small></h2>" + spot if spot else "")
             + weekly_html
+            + rec_html
             + heat_html
             + "<h2>Exercises</h2>"
             + f'<div class="exgrid">{"".join(ex_cards)}</div>'
@@ -649,35 +775,248 @@ def render_html(agg: dict, log_path: str = "", refresh: bool = True) -> str:
             + footer + "</body></html>")
 
 
+# ------------------------------------------------------------ CSV bridge
+CSV_COLUMNS = ["Date", "Workout Name", "Exercise Name", "Set Order", "Weight",
+               "Reps", "Distance", "Seconds", "Notes", "RPE"]
+CSV_EXERCISE_NAMES = {"squat": "Squat", "pushup": "Push Up", "bench": "Bench Press",
+                      "deadlift": "Deadlift", "lunge": "Lunge",
+                      "shoulder_press": "Overhead Press", "curl": "Bicep Curl",
+                      "pullup": "Pull Up", "plank": "Plank"}
+_CSV_IMPORT_NAMES = {
+    "squat": "squat", "back squat": "squat", "squat (barbell)": "squat",
+    "front squat": "squat", "goblet squat": "squat", "bodyweight squat": "squat",
+    "push up": "pushup", "push-up": "pushup", "pushup": "pushup", "push ups": "pushup",
+    "bench press": "bench", "bench press (barbell)": "bench",
+    "bench press (dumbbell)": "bench", "flat bench press": "bench",
+    "deadlift": "deadlift", "deadlift (barbell)": "deadlift",
+    "romanian deadlift": "deadlift", "romanian deadlift (barbell)": "deadlift",
+    "lunge": "lunge", "lunges": "lunge", "walking lunge": "lunge",
+    "lunge (dumbbell)": "lunge", "bulgarian split squat": "lunge",
+    "overhead press": "shoulder_press", "overhead press (barbell)": "shoulder_press",
+    "shoulder press": "shoulder_press", "shoulder press (dumbbell)": "shoulder_press",
+    "military press": "shoulder_press", "strict military press (barbell)": "shoulder_press",
+    "bicep curl": "curl", "bicep curl (barbell)": "curl", "bicep curl (dumbbell)": "curl",
+    "hammer curl": "curl", "hammer curl (dumbbell)": "curl", "curl": "curl",
+    "pull up": "pullup", "pull-up": "pullup", "pullup": "pullup", "chin up": "pullup",
+    "chin-up": "pullup", "plank": "plank",
+}
+
+
+def map_csv_exercise(name: str) -> str | None:
+    key = " ".join((name or "").lower().split())
+    return _CSV_IMPORT_NAMES.get(key)
+
+
+def export_csv(history: list[dict], path: str) -> int:
+    """One row per rep-set (Strong/Hevy column names) so other trackers
+    and spreadsheets can read the log. Returns rows written."""
+    n = 0
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(CSV_COLUMNS)
+        for s in history:
+            summ = s.get("summary") or {}
+            ex = CSV_EXERCISE_NAMES.get(s.get("exercise") or "", s.get("exercise") or "?")
+            plank = s.get("plank")
+            note = ""
+            if summ.get("avg_score") is not None:
+                note = f"form score {summ['avg_score']:g}"
+            faults = summ.get("fault_counts") or {}
+            if faults:
+                note += ("; " if note else "") + ", ".join(
+                    f"{fault_name(k)} x{v}" for k, v in faults.items())
+            if plank:
+                w.writerow([s.get("started", ""), "AI Gym Coach", ex, 1, "", "", "",
+                            plank.get("total_hold_s", ""), note, ""])
+            else:
+                w.writerow([s.get("started", ""), "AI Gym Coach", ex, 1,
+                            summ.get("load_kg", ""), summ.get("reps", 0), "", "",
+                            note, ""])
+            n += 1
+    return n
+
+
+def _parse_csv_date(text: str) -> str | None:
+    """ISO (Strong), '13 Jul 2026, 18:00' (Hevy) or US dates → YYYY-MM-DD."""
+    text = text.strip()
+    for cand, fmt in ((text[:10], "%Y-%m-%d"), (text.split(",")[0], "%d %b %Y"),
+                      (text.split(" ")[0], "%m/%d/%Y"), (text.split(" ")[0], "%d.%m.%Y")):
+        try:
+            return dt.datetime.strptime(cand.strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def import_csv(path: str, log_path: str) -> tuple[int, int]:
+    """Append sets from a Strong / Hevy-style CSV export to the log
+    (one session per date+exercise; unknown exercises are skipped).
+    Returns (sessions added, rows skipped)."""
+    import io
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        text = fh.read()
+    first = text.splitlines()[0] if text else ""
+    delim = ";" if first.count(";") > first.count(",") else ","
+    rows = list(csv.DictReader(io.StringIO(text), delimiter=delim))
+
+    def col(r, *names):
+        low = {k.strip().lower(): v for k, v in r.items() if k}
+        for n in names:
+            if n in low and str(low[n]).strip():
+                return str(low[n]).strip()
+        return ""
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    skipped = 0
+    for r in rows:
+        ex = map_csv_exercise(col(r, "exercise name", "exercise_title", "exercise"))
+        date = col(r, "date", "start_time", "workout date")
+        if not ex or not date:
+            skipped += 1
+            continue
+        d = _parse_csv_date(date)
+        if not d:
+            skipped += 1
+            continue
+        groups.setdefault((d, ex), []).append(r)
+    history = load_history(log_path)
+    for (d, ex), rs in sorted(groups.items()):
+        reps_total, loads, hold = 0, [], 0.0
+        for r in rs:
+            try:
+                n = int(float(col(r, "reps") or 0))
+            except ValueError:
+                n = 0
+            try:
+                kg = float(col(r, "weight", "weight_kg", "weight (kg)") or 0)
+            except ValueError:
+                kg = 0.0
+            if col(r, "weight_lbs", "weight (lbs)") and not kg:
+                try:
+                    kg = round(float(col(r, "weight_lbs", "weight (lbs)")) * 0.4536, 1)
+                except ValueError:
+                    pass
+            try:
+                secs = float(col(r, "seconds", "duration_seconds") or 0)
+            except ValueError:
+                secs = 0.0
+            reps_total += n
+            loads += [kg] * n if kg else []
+            hold += secs
+        reps = [{"n": i + 1, "score": None, "eccentric_s": None, "concentric_s": None,
+                 "min_angle": None, "velocity": None, "similarity": None,
+                 "faults": [], "load_kg": (loads[i] if i < len(loads) else None)}
+                for i in range(reps_total)]
+        summ = {"reps": reps_total, "avg_score": None, "avg_concentric_s": None,
+                "avg_similarity": None, "fault_counts": {}, "velocity_loss_pct": None,
+                "imported_from": os.path.basename(path)}
+        if loads:
+            summ["load_kg"] = max(loads)
+            summ["volume_kg"] = round(sum(loads), 1)
+            by = {}
+            for kg in loads:
+                by[kg] = by.get(kg, 0) + 1
+            summ["e1rm_kg"] = round(max(kg * (1 + min(n, 30) / 30) for kg, n in by.items()), 1)
+        history.append({"started": f"{d} 12:00:00", "exercise": ex, "reps": reps,
+                        "plank": ({"total_hold_s": round(hold, 1),
+                                   "best_streak_s": round(hold, 1)}
+                                  if ex == "plank" and hold else None),
+                        "duration_s": hold or 0.0, "summary": summ})
+    history.sort(key=lambda s: s.get("started", ""))
+    with open(log_path, "w", encoding="utf-8") as fh:
+        json.dump(history, fh, indent=1)
+    return len(groups), skipped
+
+
 # ---------------------------------------------------------------- server
 class _Handler(BaseHTTPRequestHandler):
     log_path = DEFAULT_LOG
+    auth = None                  # coach_auth.WebAuth when --auth is on
 
-    def do_GET(self):  # noqa: N802 (stdlib API name)
-        if self.path.split("?")[0] == "/data.json":
-            payload = json.dumps(aggregate(load_history(self.log_path)),
-                                 default=str).encode()
-            ctype = "application/json"
-        elif self.path.split("?")[0] == "/":
-            payload = render_html(aggregate(load_history(self.log_path)),
-                                  self.log_path).encode()
-            ctype = "text/html; charset=utf-8"
-        else:
-            self.send_error(404)
-            return
-        self.send_response(200)
+    # ---- helpers
+    def _send(self, payload: bytes, ctype: str, code: int = 200,
+              extra: list[tuple[str, str]] | None = None):
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(payload)))
+        for k, v in extra or []:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _redirect(self, location: str, extra=None):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        for k, v in extra or []:
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _secure(self) -> bool:
+        return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+
+    def _base_url(self) -> str:
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost"
+        return ("https" if self._secure() else "http") + "://" + host
+
+    def _session(self) -> dict | None:
+        if self.auth is None:
+            return {}                                # auth off: everyone is "in"
+        return self.auth.session(self.headers.get("Cookie"))
+
+    def do_GET(self):  # noqa: N802 (stdlib API name)
+        url = urlparse(self.path)
+        path, query = url.path, dict(parse_qsl(url.query))
+        auth = self.auth
+        if auth is not None:
+            import coach_auth
+            if path == "/login":
+                return self._send(auth.login_page(query.get("error", "")).encode(),
+                                  "text/html; charset=utf-8")
+            if path.startswith("/login/"):
+                try:
+                    return self._redirect(auth.start(path[len("/login/"):], self._base_url()))
+                except coach_auth.AuthError as e:
+                    return self._redirect("/login?" + urlencode({"error": str(e)}))
+            if path == "/auth/callback":
+                try:
+                    _, cookie = auth.finish(query)
+                except coach_auth.AuthError as e:
+                    return self._redirect("/login?" + urlencode({"error": str(e)}))
+                return self._redirect("/", [("Set-Cookie",
+                                             auth.cookie_headers(cookie, self._secure()))])
+            if path == "/logout":
+                return self._redirect("/login", [("Set-Cookie",
+                                                  auth.cookie_headers(None, self._secure()))])
+        session = self._session()
+        if session is None:
+            if path == "/data.json":
+                return self._send(b'{"error": "sign in first"}', "application/json", 401)
+            return self._redirect("/login")
+        if path == "/data.json":
+            payload = json.dumps(aggregate(load_history(self.log_path)),
+                                 default=str).encode()
+            return self._send(payload, "application/json")
+        if path == "/":
+            payload = render_html(aggregate(load_history(self.log_path)),
+                                  self.log_path, user=session or None).encode()
+            return self._send(payload, "text/html; charset=utf-8")
+        self.send_error(404)
 
     def log_message(self, *a):  # keep the console quiet
         pass
 
 
 def serve(log_path: str, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-          open_browser: bool = True) -> None:
-    handler = type("Handler", (_Handler,), {"log_path": log_path})
+          open_browser: bool = True, auth=None) -> None:
+    handler = type("Handler", (_Handler,), {"log_path": log_path, "auth": auth})
+    if auth is not None:
+        who = ", ".join(sorted(auth.allowed)) if auth.allowed else \
+            "any account of the configured providers"
+        print(f"Sign-in required ({', '.join(auth.providers)}); allowed: {who}")
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: serving beyond localhost without --auth — anyone on the "
+              "network can read your training log (docs/AUTH.md)")
     srv = ThreadingHTTPServer((host, port), handler)
     url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{srv.server_address[1]}/"
     print(f"Dashboard on {url}  (log: {log_path}) — Ctrl+C to stop")
@@ -735,6 +1074,11 @@ def demo_history(weeks: int = 8, seed: int = 42) -> list[dict]:
                              "similarity": round(55 + 35 * progress + rng.uniform(-8, 8))
                              if ex == "squat" else None,
                              "faults": sorted(rep_faults)})
+            load = {"squat": 60, "deadlift": 80, "shoulder_press": 30}.get(ex)
+            if load:                                     # barbell lifts carry load
+                load = round(load + 20 * progress + rng.choice((0, 0, 2.5)), 1)
+                for r in reps:
+                    r["load_kg"] = load
             scores = [r["score"] for r in reps]
             sims = [r["similarity"] for r in reps if r["similarity"] is not None]
             vels = [r["velocity"] for r in reps]
@@ -750,6 +1094,9 @@ def demo_history(weeks: int = 8, seed: int = 42) -> list[dict]:
                             "avg_similarity": round(sum(sims) / len(sims), 1)
                             if sims else None,
                             "fault_counts": fc, "velocity_loss_pct": vloss,
+                            **({"load_kg": load, "volume_kg": round(load * n, 1),
+                                "e1rm_kg": round(load * (1 + n / 30), 1)}
+                               if load else {}),
                             **({"avg_hr": rng.randint(118, 150),
                                 "peak_hr": rng.randint(155, 178)}
                                if progress > 0.5 else {})}})
@@ -890,6 +1237,120 @@ def selftest() -> None:
     assert render_html(agg6, "demo")                    # renders
     assert demo_history(weeks=8, seed=42) == demo       # deterministic
     print("ok 6 — demo history (schema, trends, deterministic)")
+
+    # 7 — load/volume/e1RM/PRs + muscle recovery
+    hist7 = _fake_history()
+    hist7[-1]["summary"].update({"load_kg": 60.0, "volume_kg": 180.0,
+                                 "e1rm_kg": 66.0, "prs": ["estimated 1RM: 66 kg"]})
+    hist7[-1]["started"] = dt.date.today().isoformat() + " 18:00:00"
+    agg7 = aggregate(hist7)
+    assert agg7["totals"]["volume_kg"] == 180.0 and agg7["totals"]["prs"] == 1
+    assert agg7["exercises"]["squat"]["prs"]["best_e1rm_kg"] == 66.0
+    rec = {r["muscle"]: r for r in agg7["recovery"]}
+    assert rec["quads"]["status"] == "recovering" and rec["quads"]["sessions_7d"] == 1
+    assert "glutes" in rec and rec["chest"]["status"] == "detraining", rec.get("chest")
+    page7 = render_html(agg7)
+    for marker in ("estimated 1RM", "PR — estimated 1RM: 66 kg", "Muscles",
+                   "total volume lifted", "recovering"):
+        assert marker in page7, marker
+    print("ok 7 — load, volume, e1RM, PRs, muscle recovery")
+
+    # 8 — CSV export + import round trip (Strong/Hevy columns)
+    with tempfile.TemporaryDirectory() as td:
+        csv_path = os.path.join(td, "sets.csv")
+        assert export_csv(hist7, csv_path) == 5
+        with open(csv_path, encoding="utf-8") as fh:
+            head = fh.readline().strip().split(",")
+        assert head[:3] == ["Date", "Workout Name", "Exercise Name"]
+        log = os.path.join(td, "log.json")
+        hevy = os.path.join(td, "hevy.csv")
+        with open(hevy, "w", encoding="utf-8") as fh:
+            fh.write("title,start_time,exercise_title,set_index,weight_kg,reps\n"
+                     "Legs,2026-07-20 18:00:00,Squat (Barbell),0,80,5\n"
+                     "Legs,2026-07-20 18:00:00,Squat (Barbell),1,80,5\n"
+                     "Legs,2026-07-20 18:00:00,Leg Extension (Machine),0,40,12\n"
+                     "Push,2026-07-22 18:00:00,Bench Press (Barbell),0,60,8\n")
+        n, skipped = import_csv(hevy, log)
+        assert (n, skipped) == (2, 1), (n, skipped)
+        imported = load_history(log)
+        sq = [s for s in imported if s["exercise"] == "squat"][0]
+        assert sq["summary"]["reps"] == 10 and sq["summary"]["volume_kg"] == 800.0
+        assert sq["summary"]["e1rm_kg"] == round(80 * (1 + 10 / 30), 1)
+        assert sq["summary"]["imported_from"] == "hevy.csv"
+        assert aggregate(imported)["totals"]["sessions"] == 2
+        assert map_csv_exercise("Pull Up") == "pullup" and map_csv_exercise("Yoga") is None
+        assert _parse_csv_date("13 Jul 2026, 18:00") == "2026-07-13"
+        assert _parse_csv_date("2026-07-13 18:00:00") == "2026-07-13"
+        assert _parse_csv_date("nope") is None
+    print("ok 8 — CSV export/import (Strong/Hevy columns, unknown rows skipped)")
+
+    # 9 — --auth: redirects to /login, completes the OIDC flow, sets a cookie
+    import urllib.error
+    import urllib.request
+    import http.cookiejar
+    import coach_auth
+    n, e, d = coach_auth._test_rsa_key()
+    fp = coach_auth._FakeProvider(n, e, d)
+    fp.start()
+    try:
+        web = coach_auth.WebAuth({"google": fp.provider()}, allowed={"ath@example.com"},
+                                 signer=coach_auth.SessionSigner("t", ttl_s=60))
+        with tempfile.TemporaryDirectory() as td:
+            log = os.path.join(td, "log.json")
+            with open(log, "w", encoding="utf-8") as fh:
+                json.dump(_fake_history(), fh)
+            handler = type("H", (_Handler,), {"log_path": log, "auth": web})
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{srv.server_address[1]}"
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k):
+                    return None
+            plain = urllib.request.build_opener(NoRedirect())
+            try:
+                plain.open(base + "/", timeout=5)
+                raise AssertionError("page served without a session")
+            except urllib.error.HTTPError as err:
+                assert err.code == 302 and err.headers["Location"] == "/login"
+            try:
+                plain.open(base + "/data.json", timeout=5)
+                raise AssertionError("api served without a session")
+            except urllib.error.HTTPError as err:
+                assert err.code == 401
+            with opener.open(base + "/login", timeout=5) as r:
+                assert b"Sign in with Fake" in r.read()
+            try:
+                plain.open(base + "/login/google", timeout=5)
+                raise AssertionError("expected redirect to the provider")
+            except urllib.error.HTTPError as err:
+                auth_url = err.headers["Location"]
+            q = dict(parse_qsl(urlparse(auth_url).query))
+            assert q["redirect_uri"] == base + "/auth/callback"
+            assert q["code_challenge_method"] == "S256"
+            code = "c0de"
+            fp.codes[code] = q["nonce"]
+            with opener.open(base + "/auth/callback?"
+                             + urlencode({"code": code, "state": q["state"]}), timeout=5) as r:
+                page = r.read()
+            assert b"signed in as Ath Lete" in page and b"Progress" in page
+            assert any(c.name == coach_auth.WebAuth.COOKIE for c in jar)
+            with opener.open(base + "/data.json", timeout=5) as r:
+                assert json.loads(r.read())["totals"]["sessions"] == 5
+            with opener.open(base + "/logout", timeout=5) as r:
+                assert b"Sign in" in r.read()                       # back on /login
+            try:
+                plain.open(base + "/auth/callback?code=x&state=forged", timeout=5)
+                raise AssertionError("forged state accepted")
+            except urllib.error.HTTPError as err:
+                assert err.code == 302 and "error=" in err.headers["Location"]
+            srv.shutdown()
+            srv.server_close()
+    finally:
+        fp.stop()
+    print("ok 9 — --auth gate (redirect, OIDC callback, cookie, logout, forged state)")
     print("All dashboard selftests passed.")
 
 
@@ -909,11 +1370,30 @@ def main() -> None:
                     help="serve synthetic demo history instead of a real log "
                          "(what the hosted demo runs — real data never leaves "
                          "your machine)")
+    ap.add_argument("--auth", action="store_true",
+                    help="require signing in with Google or Microsoft (env "
+                         "COACH_DASHBOARD_AUTH=1; providers from COACH_GOOGLE_CLIENT_ID "
+                         "/ COACH_MICROSOFT_CLIENT_ID, allow-list COACH_ALLOWED_EMAILS; "
+                         "docs/AUTH.md)")
+    ap.add_argument("--export-csv", metavar="FILE",
+                    help="write the log as a Strong/Hevy-style CSV and exit")
+    ap.add_argument("--import-csv", metavar="FILE",
+                    help="append sets from a Strong/Hevy CSV export to the "
+                         "log and exit")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
     if args.selftest:
         selftest()
+        return
+    if args.export_csv:
+        n = export_csv(load_history(args.log), args.export_csv)
+        print(f"Wrote {n} sessions -> {args.export_csv}")
+        return
+    if args.import_csv:
+        n, skipped = import_csv(args.import_csv, args.log)
+        print(f"Imported {n} session(s) into {args.log}"
+              + (f" ({skipped} row(s) skipped: unknown exercise/date)" if skipped else ""))
         return
     if args.demo:
         import tempfile
@@ -928,7 +1408,14 @@ def main() -> None:
             fh.write(page)
         print(f"Wrote {args.export}")
         return
-    serve(args.log, args.host, args.port, open_browser=not args.no_browser)
+    auth = None
+    if args.auth or os.environ.get("COACH_DASHBOARD_AUTH", "") not in ("", "0", "false"):
+        import coach_auth
+        provs = coach_auth.providers()
+        if not provs:
+            sys.exit(coach_auth.SETUP_HELP)
+        auth = coach_auth.WebAuth(provs, allowed=coach_auth.WebAuth.allowed_from_env())
+    serve(args.log, args.host, args.port, open_browser=not args.no_browser, auth=auth)
 
 
 if __name__ == "__main__":

@@ -78,3 +78,16 @@
 "Saved as a Strength Training workout" = "Guardado como entrenamiento de fuerza";
 "Saving to Apple Health…" = "Guardando en Salud de Apple…";
 "Connect Apple Health to save workouts and heart rate" = "Conecta Salud de Apple para guardar entrenamientos y frecuencia cardiaca";
+
+/* Account */
+"Account" = "Cuenta";
+"Signed in" = "Sesión iniciada";
+"Sign in" = "Iniciar sesión";
+"Sign out" = "Cerrar sesión";
+"via %@" = "con %@";
+"Sign in with Google" = "Iniciar sesión con Google";
+"Sign in with Microsoft" = "Iniciar sesión con Microsoft";
+"Signing in…" = "Iniciando sesión…";
+"Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider." = "Tu nombre y tu e-mail se guardan en el llavero de este iPhone y aparecen en tus resúmenes. Nada de tu entrenamiento se envía al proveedor.";
+"Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read." = "Opcional. Iniciar sesión pone tu nombre en tus resúmenes y permite que la misma cuenta abra tu panel de progreso. La página de inicio de sesión es la del proveedor, en una hoja segura del navegador del sistema; solo se leen tu nombre y tu e-mail.";
+"Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md)." = "Los inicios de sesión con Google y Microsoft aparecen cuando hay un id de cliente configurado para esta compilación (docs/AUTH.md).";

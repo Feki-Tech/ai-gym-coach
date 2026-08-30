@@ -78,3 +78,16 @@
 "Saved as a Strength Training workout" = "स्ट्रेंथ ट्रेनिंग वर्कआउट के रूप में सेव हुआ";
 "Saving to Apple Health…" = "Apple Health में सेव हो रहा है…";
 "Connect Apple Health to save workouts and heart rate" = "वर्कआउट और हृदय गति सेव करने के लिए Apple Health कनेक्ट करें";
+
+/* Account */
+"Account" = "खाता";
+"Signed in" = "साइन इन";
+"Sign in" = "साइन इन करें";
+"Sign out" = "साइन आउट";
+"via %@" = "%@ के ज़रिए";
+"Sign in with Google" = "Google से साइन इन करें";
+"Sign in with Microsoft" = "Microsoft से साइन इन करें";
+"Signing in…" = "साइन इन हो रहा है…";
+"Your name and e-mail are kept in this iPhone's keychain and shown in your summaries. Nothing about your training is sent to the provider." = "आपका नाम और ई-मेल इस iPhone के कीचेन में रहते हैं और आपके सारांश में दिखते हैं। आपके प्रशिक्षण के बारे में कुछ भी प्रदाता को नहीं भेजा जाता।";
+"Optional. Signing in puts your name on your summaries and lets the same account open your progress dashboard. The sign-in page is the provider's own, in a secure system browser sheet; only your name and e-mail are read." = "वैकल्पिक। साइन इन करने से आपका नाम सारांश पर आता है और वही खाता आपका प्रगति डैशबोर्ड खोल सकता है। साइन-इन पेज प्रदाता का अपना है, सुरक्षित सिस्टम ब्राउज़र शीट में; केवल आपका नाम और ई-मेल पढ़ा जाता है।";
+"Google and Microsoft sign-in appear when a client id is configured for this build (docs/AUTH.md)." = "Google और Microsoft साइन-इन तब दिखते हैं जब इस बिल्ड के लिए client id सेट हो (docs/AUTH.md)।";

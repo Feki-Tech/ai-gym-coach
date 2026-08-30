@@ -128,6 +128,14 @@ services:
     image: ai-gym-coach
     entrypoint: ["python", "coach_dashboard.py"]
     command: ["--host", "0.0.0.0", "--log", "/data/workout_log.json", "--no-browser"]
+    environment:                     # sign-in (docs/AUTH.md); unset = open page
+      - COACH_DASHBOARD_AUTH=${COACH_DASHBOARD_AUTH:-}
+      - COACH_GOOGLE_CLIENT_ID=${COACH_GOOGLE_CLIENT_ID:-}
+      - COACH_GOOGLE_CLIENT_SECRET=${COACH_GOOGLE_CLIENT_SECRET:-}
+      - COACH_MICROSOFT_CLIENT_ID=${COACH_MICROSOFT_CLIENT_ID:-}
+      - COACH_MICROSOFT_TENANT=${COACH_MICROSOFT_TENANT:-common}
+      - COACH_ALLOWED_EMAILS=${COACH_ALLOWED_EMAILS:-}
+      - COACH_SESSION_SECRET=${COACH_SESSION_SECRET:-}
     ports:
       - "7788:7788"
     volumes:

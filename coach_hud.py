@@ -382,6 +382,9 @@ class HudState:
     elapsed_s: float = 0.0
     cues_on: bool = True
     angles: dict | None = None            # live joint angles (auto mode)
+    load_kg: float | None = None          # external load per rep
+    best_reps: int = 0                    # session rep record to beat
+    muscles: list = field(default_factory=list)   # from the exercise catalogue
 
 
 # -------------------------------------------------------------------- HUD
@@ -527,6 +530,9 @@ class Hud:
                 and st.phase == "IDLE" and st.reps == 0 and st.mode == "reps":
             self.text.add(frame, x0 + pad, py + th + 10 * u,
                           "start your first rep", int(12 * u), C_MUTED)
+        elif st.muscles and st.mode != "auto":
+            self.text.add(frame, x0 + pad, py + th + 10 * u,
+                          " · ".join(st.muscles[:3]), int(12 * u), C_DIM)
         elif st.mode == "auto" and st.tracking == "ok":
             self.text.add(frame, x0 + pad, py + th + 10 * u,
                           "I'll recognise the exercise", int(12 * u), C_MUTED)
@@ -560,7 +566,12 @@ class Hud:
             if unit:
                 self.text.add(frame, bx + 2 * u, by + int(24 * u), unit,
                               int(20 * u), C_MUTED, True)
-            self.text.add(frame, x0 + cw - pad, by + int(58 * u), sub,
+            extra = ""
+            if st.mode == "reps" and st.load_kg:
+                extra = f"{st.load_kg:g} kg · "
+            if st.mode == "reps" and st.best_reps and st.reps < st.best_reps:
+                extra += f"record {st.best_reps} · "
+            self.text.add(frame, x0 + cw - pad, by + int(58 * u), extra + sub,
                           int(11 * u), C_MUTED, False, "r")
         # goal ring / rep-score dots
         if st.mode == "reps" and st.rep_goal:
@@ -1018,6 +1029,9 @@ class Hud:
             if vl is not None:
                 tiles.append((f"-{vl:.0f}%", "speed loss",
                               C_RED if vl > 20 else C_GREEN))
+        if sm.get("volume_kg"):
+            tiles.append((f"{sm['volume_kg']:g}", "kg volume", C_BLUE))
+            tiles.append((f"{sm['e1rm_kg']:g}", "kg est. 1RM", C_GREEN))
         if sm.get("avg_hr"):
             tiles.append((f"{sm['avg_hr']}", f"avg bpm · peak {sm.get('peak_hr')}",
                           C_RED))
@@ -1052,6 +1066,8 @@ class Hud:
         tips = []
         reps = sm.get("reps") or 0
         fc = sm.get("fault_counts") or {}
+        for pr in sm.get("prs") or []:
+            tips.append(("good", "Personal record — " + pr))
         if plank:
             if plank.get("total_hold_s", 0) >= 30:
                 tips.append(("good", "Solid hold — try a longer unbroken streak next time."))
@@ -1119,6 +1135,7 @@ def demo_states() -> dict[str, tuple[np.ndarray | None, HudState]]:
     out = {}
     out["tracking"] = (figure(0.6), HudState(
         **base, phase="BOTTOM", reps=3, rep_goal=10, rep_scores=[90, 75, 85],
+        load_kg=60.0, best_reps=8, muscles=["quadriceps", "glutes", "hamstrings"],
         last_score=85, similarity=72, has_reference=True, tempo=(1.4, 0.9),
         velocity_ratio=0.93, signal_value=112.0, faults_now=["knees_cave"],
         cue="Push your knees out — don't let them cave in.", cue_kind="fault",

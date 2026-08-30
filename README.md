@@ -23,6 +23,10 @@ your form, and coaches you with on-screen + voice feedback.
 - **Workout log & progress** — per-rep scores, tempo, velocity, and fault statistics in `workout_log.json`; `--stats` prints a progress dashboard with score trends
 - **Web progress dashboard** — `python coach_dashboard.py` opens a local page with charts: weekly volume, form-score and rep trends per exercise, PRs, fault breakdowns, streaks (offline, no dependencies); `--demo` previews it with synthetic sample data
 - **Talk to your coach** — a local LLM (Ollama in Docker) answers questions by text or **voice** during the workout, with your live session + history as context; replies **stream** in real time, you can **interrupt** anytime (barge-in), and with the voice extras it's fully **hands-free**: just speak, a VAD segments your sentence, Whisper transcribes it locally. The coach also **speaks up on its own** — greets you with last session's key point, debriefs every finished set (score trend, dominant fault, one cue) and wraps up the session — and can **query your full training history** on demand instead of guessing numbers — see [docs/COACH.md](docs/COACH.md)
+- **The coach knows exercises, not just the nine it can see** — a local **RAG** layer (`coach_knowledge.py`, dependency-free BM25, optional Ollama embeddings for hybrid ranking) retrieves the relevant coaching notes (`data/knowledge/*.md`: form faults, programming, recovery, nutrition, technique, alternatives) and entries from an **open exercise catalogue** (`data/exercises.json`: 876 exercises with muscles, equipment, level, mechanic and step-by-step instructions, from [free-exercise-db](https://github.com/yuhonas/free-exercise-db), public domain; `--fetch-wger` swaps in [wger](https://wger.de)'s CC-BY-SA catalogue with 20+ languages) into every reply. The coach looks things up instead of guessing (`exercise_lookup`, `plate_calc` actions; `/exercise <name|muscle>`, `/plates 100` commands) — the behaviour contract is in [docs/MODEL_REQUIREMENTS.md](docs/MODEL_REQUIREMENTS.md)
+- **MCP server** — `python coach_mcp.py` exposes the athlete's data to any MCP client (Claude Desktop, Claude Code, Cursor…): training history, last session rep by rep, profile read/write, exercise catalogue + coaching notes, plate calculator, the **live session** and a command queue that drives the running app — so a bigger model can coach with the same grounded numbers, all local (`claude mcp add gym-coach -- uv run --directory … python coach_mcp.py`)
+- **Load, volume, e1RM and PRs** — `--load 60` (or tell the coach "I'm on 60 kilos") logs the weight per rep; sessions get volume and an Epley **estimated 1RM**, the app announces **personal records** live (most reps ever) and at the end (e1RM, hold), the dashboard charts e1RM/volume per exercise and a **muscle recovery** view (sets per muscle group this week, recovering / ready / detraining — muscles come from the catalogue), and `coach_dashboard.py --export-csv` / `--import-csv` speak the Strong/Hevy CSV format so history moves in and out
+- **Sign in with Google or Microsoft** (optional) — `python coach_auth.py --login google|microsoft`, or `/login` in the chat: the verified name/e-mail personalise the coach, and `coach_dashboard.py --auth` puts the progress page behind a login with an e-mail allow-list for Docker or the Azure demo. OAuth 2.0 for native apps (RFC 8252 loopback), PKCE, OpenID Connect with full ID-token verification — standard library only; the iOS app adds Sign in with Apple — see [docs/AUTH.md](docs/AUTH.md)
 - **The coach remembers you** — a local athlete profile (SQLite, never uploaded) auto-learns your goals, injuries, equipment and preferences from conversation and personalises future coaching; `/profile` `/remember` `/forget` to inspect or edit — see [docs/COACH.md](docs/COACH.md)
 - **The coach drives the app** — ask it to switch exercise, set a rep goal, start a rest timer, enforce tempo or mute cues, and it happens live; it also sees your joint angles and environment (lighting, framing, visibility) for smarter advice — see [docs/COACH.md](docs/COACH.md)
 - **Google Calendar** — connect once and the coach checks your week and books training sessions with you ("when can I train?" → "Tuesday 18:00 is free — book it?"); only calendar-events access, tokens stay local — see [docs/COACH.md §5](docs/COACH.md)
@@ -46,8 +50,10 @@ python pose_coach.py --exercise deadlift --video set1.mp4
 python pose_coach.py --exercise squat --record-reference   # save your best rep as the golden rep
 python pose_coach.py --exercise squat            # future reps get a ref-sim 0-100 score
 python pose_coach.py --train-classifier          # train the ML detector (~2 s, then auto uses it)
+python pose_coach.py --exercise squat --load 60  # log 60 kg per rep → volume, est. 1RM, PRs
 python pose_coach.py --stats                     # progress dashboard from the log
 python coach_dashboard.py                        # same, as a web page with charts
+python coach_dashboard.py --import-csv hevy.csv  # bring history from Strong / Hevy exports
 python pose_coach.py --selftest                  # verify install, no camera needed
 ```
 
@@ -88,6 +94,8 @@ python pose_coach.py --exercise auto --coach   # chat while you train
 python coach_chat.py --voice --hands-free      # standalone voice chat
 python coach_chat.py --voice --hands-free --mic "Camo"   # ...on a specific microphone
 docker compose run --rm coach                  # text chat fully in Docker
+python coach_knowledge.py --search "knees cave"   # what the coach retrieves for a question
+python coach_mcp.py --list                     # the same data as MCP tools for Claude & co
 ```
 
 The coach sees your live session (reps, scores, faults, fatigue) and your

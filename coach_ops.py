@@ -60,7 +60,7 @@ def local_no_proxy() -> None:
 
 local_no_proxy()
 
-PROMPT_VERSION = "coach-3.2"
+PROMPT_VERSION = "coach-3.3"   # +retrieval, exercise_lookup, plate_calc
 
 DEFAULT_TRACE = os.environ.get("COACH_TRACE", "")
 TEXT_IN_TRACE = os.environ.get("COACH_TRACE_TEXT", "") not in ("", "0",

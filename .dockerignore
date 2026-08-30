@@ -15,3 +15,8 @@ __pycache__
 *.pyc
 *.task
 workout_log.json
+
+# knowledge base + exercise catalogue are baked into the image (coach_knowledge.py)
+!data/exercises.json
+!data/knowledge/
+!data/knowledge/**
