@@ -1,2 +1,4 @@
 "CFBundleDisplayName" = "AI Gym Coach";
 "NSCameraUsageDescription" = "AI Gym Coach analyzes your exercise form live through the camera. Video is processed entirely on this device and is never stored or uploaded.";
+"NSHealthShareUsageDescription" = "AI Gym Coach reads your heart rate, resting heart rate, HRV, VO2 max, weight, height, age, sleep, steps, active energy, exercise minutes and workouts to personalise coaching cues, heart-rate zones and rest. Data is read on this iPhone only and never uploaded.";
+"NSHealthUpdateUsageDescription" = "AI Gym Coach saves each finished set to Health as a Strength Training workout so it counts toward your Fitness rings and history.";

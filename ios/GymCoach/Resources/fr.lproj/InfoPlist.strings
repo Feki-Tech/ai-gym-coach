@@ -1,2 +1,4 @@
 "CFBundleDisplayName" = "AI Gym Coach";
 "NSCameraUsageDescription" = "AI Gym Coach analyse ta technique en direct grâce à la caméra. La vidéo est traitée entièrement sur cet appareil — jamais enregistrée ni envoyée.";
+"NSHealthShareUsageDescription" = "AI Gym Coach lit votre fréquence cardiaque, FC au repos, VFC, VO2 max, poids, taille, âge, sommeil, pas, énergie active, minutes d'exercice et entraînements pour personnaliser les consignes, les zones cardiaques et la récupération. Les données sont lues sur cet iPhone uniquement et jamais envoyées.";
+"NSHealthUpdateUsageDescription" = "AI Gym Coach enregistre chaque série terminée dans Santé comme entraînement de musculation afin qu'elle compte pour vos anneaux et votre historique Fitness.";

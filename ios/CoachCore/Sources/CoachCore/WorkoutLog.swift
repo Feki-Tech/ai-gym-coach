@@ -37,6 +37,10 @@ public struct SessionSummary: Codable {
     public let avgConcentricS: Double?
     public let faultCounts: [String: Int]
     public let velocityLossPct: Double?
+    /// Heart rate over the set (Apple Health / a strap); same keys as the
+    /// desktop log's sensor fusion so dashboards read both.
+    public var avgHr: Int? = nil
+    public var peakHr: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case reps
@@ -44,6 +48,8 @@ public struct SessionSummary: Codable {
         case avgConcentricS = "avg_concentric_s"
         case faultCounts = "fault_counts"
         case velocityLossPct = "velocity_loss_pct"
+        case avgHr = "avg_hr"
+        case peakHr = "peak_hr"
     }
 }
 
@@ -59,6 +65,15 @@ public struct SessionRecord: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case started, exercise, reps, plank, summary
         case durationS = "duration_s"
+    }
+
+    /// The same record with the set's heart-rate figures attached.
+    public func withHeartRate(avg: Int?, peak: Int?) -> SessionRecord {
+        var sm = summary
+        sm.avgHr = avg
+        sm.peakHr = peak
+        return SessionRecord(started: started, exercise: exercise, durationS: durationS,
+                             reps: reps, plank: plank, summary: sm)
     }
 }
 

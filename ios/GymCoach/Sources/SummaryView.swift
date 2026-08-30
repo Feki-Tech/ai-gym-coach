@@ -4,6 +4,7 @@ import CoachCore
 struct SummaryView: View {
     let record: SessionRecord
     let onClose: () -> Void
+    @ObservedObject private var health = HealthService.shared
 
     var body: some View {
         NavigationStack {
@@ -23,6 +24,11 @@ struct SummaryView: View {
                             row("Velocity loss", String(format: "%.0f %%", v))
                         }
                     }
+                    if let hr = record.summary.avgHr {
+                        row("Heart rate", String(format: NSLocalizedString(
+                            "avg %lld · peak %lld bpm", comment: ""),
+                            hr, record.summary.peakHr ?? hr))
+                    }
                 }
                 if !record.summary.faultCounts.isEmpty {
                     Section("Focus points") {
@@ -41,6 +47,41 @@ struct SummaryView: View {
                         Label("Clean set — no recurring faults!",
                               systemImage: "checkmark.seal.fill")
                             .foregroundStyle(.green)
+                    }
+                }
+                if health.isAvailable {
+                    Section("Apple Health") {
+                        if health.enabled {
+                            if let saved = health.lastSavedWorkout,
+                               saved.timeIntervalSinceNow > -300 {
+                                Label("Saved as a Strength Training workout",
+                                      systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else if let err = health.lastError {
+                                Label(err, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                            } else if record.summary.reps > 0 || record.plank != nil {
+                                Label("Saving to Apple Health…", systemImage: "heart.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button {
+                                AppleAppLinks.open(AppleAppLinks.fitness)
+                            } label: {
+                                Label("Open the Fitness app", systemImage: "figure.run.circle")
+                            }
+                            Button {
+                                AppleAppLinks.open(AppleAppLinks.health)
+                            } label: {
+                                Label("Open the Health app", systemImage: "heart.text.square")
+                            }
+                        } else {
+                            NavigationLink {
+                                HealthView()
+                            } label: {
+                                Label("Connect Apple Health to save workouts and heart rate",
+                                      systemImage: "heart")
+                            }
+                        }
                     }
                 }
             }

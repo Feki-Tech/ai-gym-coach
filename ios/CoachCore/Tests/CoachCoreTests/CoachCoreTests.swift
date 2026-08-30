@@ -15,6 +15,23 @@ final class CoachCoreTests: XCTestCase {
         XCTAssertEqual(segmentVsVertical(top: P2(1, 1), bottom: P2(0, 1)), 90, accuracy: 1e-6)
     }
 
+    // 1b) heart-rate fields share the desktop log's keys and stay optional
+    func testSessionSummaryHeartRateRoundTrip() throws {
+        let builder = SessionBuilder()
+        let rec = builder.finish(exercise: "squat", durationS: 42)
+        XCTAssertNil(rec.summary.avgHr)
+        let withHr = rec.withHeartRate(avg: 131, peak: 158)
+        let data = try JSONEncoder().encode(withHr)
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(json.contains("\"avg_hr\":131") && json.contains("\"peak_hr\":158"))
+        let back = try JSONDecoder().decode(SessionRecord.self, from: data)
+        XCTAssertEqual(back.summary.avgHr, 131)
+        XCTAssertEqual(back.summary.peakHr, 158)
+        // records written before the field existed still decode
+        let legacy = try JSONDecoder().decode(SessionRecord.self, from: try JSONEncoder().encode(rec))
+        XCTAssertNil(legacy.summary.peakHr)
+    }
+
     // 2) One Euro reduces jitter on a noisy static hold
     func testOneEuroReducesJitter() {
         var rng = SystemRandomNumberGenerator()
