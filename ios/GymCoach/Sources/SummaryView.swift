@@ -49,38 +49,38 @@ struct SummaryView: View {
                             .foregroundStyle(.green)
                     }
                 }
-            }
-            if health.isAvailable {
-                Section("Apple Health") {
-                    if health.enabled {
-                        if let saved = health.lastSavedWorkout,
-                           saved.timeIntervalSinceNow > -300 {
-                            Label("Saved as a Strength Training workout",
-                                  systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        } else if let err = health.lastError {
-                            Label(err, systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
-                        } else if record.summary.reps > 0 || record.plank != nil {
-                            Label("Saving to Apple Health…", systemImage: "heart.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        Button {
-                            AppleAppLinks.open(AppleAppLinks.fitness)
-                        } label: {
-                            Label("Open the Fitness app", systemImage: "figure.run.circle")
-                        }
-                        Button {
-                            AppleAppLinks.open(AppleAppLinks.health)
-                        } label: {
-                            Label("Open the Health app", systemImage: "heart.text.square")
-                        }
-                    } else {
-                        NavigationLink {
-                            HealthView()
-                        } label: {
-                            Label("Connect Apple Health to save workouts and heart rate",
-                                  systemImage: "heart")
+                if health.isAvailable {
+                    Section("Apple Health") {
+                        if health.enabled {
+                            if let saved = health.lastSavedWorkout,
+                               saved.timeIntervalSinceNow > -300 {
+                                Label("Saved as a Strength Training workout",
+                                      systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else if let err = health.lastError {
+                                Label(err, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                            } else if record.summary.reps > 0 || record.plank != nil {
+                                Label("Saving to Apple Health…", systemImage: "heart.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button {
+                                AppleAppLinks.open(AppleAppLinks.fitness)
+                            } label: {
+                                Label("Open the Fitness app", systemImage: "figure.run.circle")
+                            }
+                            Button {
+                                AppleAppLinks.open(AppleAppLinks.health)
+                            } label: {
+                                Label("Open the Health app", systemImage: "heart.text.square")
+                            }
+                        } else {
+                            NavigationLink {
+                                HealthView()
+                            } label: {
+                                Label("Connect Apple Health to save workouts and heart rate",
+                                      systemImage: "heart")
+                            }
                         }
                     }
                 }
