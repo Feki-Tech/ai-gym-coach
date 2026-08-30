@@ -203,7 +203,34 @@ turns the capability on for your team.
 Simulator note: HealthKit works in the simulator but has no data — add
 samples in the simulator's Health app or run on a device.
 
-## 7. Suggested next steps
+## 7. Sign in — Apple, Google, Microsoft
+
+`Sources/AuthService.swift` + `Sources/AccountView.swift` (person icon on the
+home screen). Same conventions as the desktop (`coach_auth.py`, docs/AUTH.md):
+Authorization Code + PKCE S256, `state` + `nonce`, provider discovery, ID-token
+claim checks, and the **system browser** through `ASWebAuthenticationSession`
+— never an embedded web view. Identity (provider, subject, name, e-mail) lives
+in the Keychain (`AfterFirstUnlockThisDeviceOnly`); no tokens are kept.
+
+- **Sign in with Apple** is always offered and listed first — App Store
+  Review Guideline 4.8 requires it whenever a third-party login is present.
+  Entitlement `com.apple.developer.applesignin` is in the XcodeGen spec; enable
+  the capability for your App ID in the developer portal.
+- **Google**: create an *iOS* OAuth client (bundle id `tech.fekitech.gymcoach`);
+  the redirect is the reversed client id (`com.googleusercontent.apps.<id>:/oauth2redirect`),
+  derived at runtime. Pass the id at build time — it is not in the repo:
+  `xcodebuild … COACH_GOOGLE_IOS_CLIENT_ID=<id>.apps.googleusercontent.com`
+  (a `$(…)` build setting feeds `GoogleClientID` in Info.plist; in CI use a
+  repository secret).
+- **Microsoft**: app registration with an *iOS/macOS* platform, bundle id
+  `tech.fekitech.gymcoach` → redirect `msauth.tech.fekitech.gymcoach://auth`
+  (registered as a URL type). Pass `COACH_MICROSOFT_CLIENT_ID` (and
+  `COACH_MICROSOFT_TENANT`, default `common`) the same way.
+
+Empty ids simply hide those buttons, so the CI simulator build needs no
+secrets.
+
+## 8. Suggested next steps
 
 - Read the Health snapshot into the LLM coach's context on desktop via the
   MCP bridge (export it from the phone, or sync the workout log).
