@@ -3,6 +3,7 @@
 #   docker compose run --rm selftest
 #   VIDEO=squats.mp4 EXERCISE=squat docker compose run --rm analyze
 #   EXERCISE=squat docker compose run --rm webcam        # Linux host only
+#   CAMERA_DEV=/dev/video2 docker compose run --rm webcam  # another host camera
 #
 #   docker compose up -d ollama                          # local LLM (any OS)
 #   docker compose exec ollama ollama pull llama3.2:3b   # once, ~2 GB
@@ -47,7 +48,7 @@ services:
     image: ai-gym-coach
     command: ["--exercise", "${EXERCISE:-squat}", "--no-voice"]
     devices:
-      - /dev/video0:/dev/video0
+      - ${CAMERA_DEV:-/dev/video0}:/dev/video0   # pick the host camera
     environment:
       - DISPLAY=${DISPLAY:-}
     volumes:
@@ -104,7 +105,7 @@ services:
     stdin_open: true
     tty: true
     devices:
-      - /dev/video0:/dev/video0
+      - ${CAMERA_DEV:-/dev/video0}:/dev/video0   # pick the host camera
       - /dev/snd:/dev/snd
     environment:
       - DISPLAY=${DISPLAY:-}
