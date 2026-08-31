@@ -245,6 +245,9 @@ python coach_server.py
 #   Pairing code: 7F3A2C   ← enter both once in the app: home → 💬 → Coach settings
 ```
 
+`scripts\start-coach.bat` does all of that with one double-click on
+Windows (starts Ollama, pulls the model on first run, launches the server).
+
 `coach_server.py` (standard library, selftested) exposes the same
 `ChatCoach` the desktop uses: `/chat` and `/event` stream the answer
 sentence by sentence (SSE) with the phone's **live session** attached to
