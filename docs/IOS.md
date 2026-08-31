@@ -279,6 +279,20 @@ On the phone, once paired:
   overlay, heart-rate zone pill, personal-record cues; buttons for rest,
   load and the coach.
 
+- **Hands-free by default**: when a coach server is paired, the mic starts
+  listening as the set starts (after the one-time microphone + speech
+  permissions) — just speak, like on the desktop. A pill on the HUD shows
+  *listening / hearing you… / coach talking*; the mic is gated while the
+  coach thinks or talks so it never hears its own voice. Hold-to-talk in
+  the chat sheet remains as a fallback, and everything can still be typed.
+- **Pick your devices**: the 🔄 button in the workout screen switches
+  between the phone's cameras (back, front — mirrored like a gym mirror —
+  ultra-wide, telephoto) and, on iOS 17+, **external USB-C cameras**, so a
+  webcam on a tripod can film the set while the phone stays in your hands;
+  the choice persists. The microphone (built-in, AirPods / Bluetooth
+  headset, wired or USB-C) is picked in Coach settings or from the chat
+  sheet's mic menu.
+
 Without a paired server the app still counts, scores and speaks cues on
 its own — the Talk button just points you to the settings.
 

@@ -139,3 +139,20 @@
 "Personal records" = "व्यक्तिगत रिकॉर्ड";
 "Pairing code rejected — check the code printed by coach_server.py." = "पेयरिंग कोड अस्वीकृत — coach_server.py द्वारा दिखाया गया कोड जाँचें।";
 "Microphone or speech recognition not allowed — enable both in Settings." = "माइक्रोफ़ोन या स्पीच रिकग्निशन की अनुमति नहीं — दोनों Settings में चालू करें।";
+
+/* Hands-free mic + devices */
+"Hands-free mic is on — just speak" = "हैंड्स-फ़्री माइक चालू है — बस बोलिए";
+"hearing you…" = "सुन रहा हूँ…";
+"listening" = "सुन रहा है";
+"coach talking" = "कोच बोल रहा है";
+"mic off" = "माइक बंद";
+"Hands-free: just speak — the coach can't hear you while it talks" = "हैंड्स-फ़्री: बोलिए — कोच अपने बोलते समय आपको नहीं सुनता";
+"System default" = "सिस्टम डिफ़ॉल्ट";
+"Microphone" = "माइक्रोफ़ोन";
+"Refresh microphones" = "माइक्रोफ़ोन रीफ़्रेश करें";
+"Built-in, AirPods / Bluetooth headsets and wired or USB-C microphones. The camera is picked in the workout screen (🔄 button) — external USB-C cameras appear there on supported devices." = "बिल्ट-इन, AirPods/ब्लूटूथ हेडसेट और वायर्ड या USB-C माइक। कैमरा वर्कआउट स्क्रीन (🔄 बटन) में चुना जाता है — समर्थित डिवाइस पर बाहरी USB-C कैमरे वहाँ दिखते हैं।";
+"Switch camera" = "कैमरा बदलें";
+"No cameras found" = "कोई कैमरा नहीं मिला";
+"%@ (front)" = "%@ (सामने)";
+"Speech recognition is unavailable right now (language not downloaded, or no network for server-based recognition)." = "स्पीच रिकग्निशन अभी उपलब्ध नहीं (भाषा डाउनलोड नहीं, या सर्वर-आधारित पहचान के लिए नेटवर्क नहीं)।";
+"The microphone produced no audio — check the selected mic." = "माइक्रोफ़ोन से कोई ऑडियो नहीं आया — चुना गया माइक जाँचें।";

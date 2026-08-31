@@ -139,3 +139,20 @@
 "Personal records" = "Records personnels";
 "Pairing code rejected — check the code printed by coach_server.py." = "Code d'association refusé — vérifiez le code affiché par coach_server.py.";
 "Microphone or speech recognition not allowed — enable both in Settings." = "Micro ou reconnaissance vocale non autorisés — activez les deux dans Réglages.";
+
+/* Hands-free mic + devices */
+"Hands-free mic is on — just speak" = "Micro mains libres activé — parlez simplement";
+"hearing you…" = "je vous entends…";
+"listening" = "à l'écoute";
+"coach talking" = "le coach parle";
+"mic off" = "micro coupé";
+"Hands-free: just speak — the coach can't hear you while it talks" = "Mains libres : parlez — le coach ne vous entend pas pendant qu'il parle";
+"System default" = "Par défaut du système";
+"Microphone" = "Micro";
+"Refresh microphones" = "Actualiser les micros";
+"Built-in, AirPods / Bluetooth headsets and wired or USB-C microphones. The camera is picked in the workout screen (🔄 button) — external USB-C cameras appear there on supported devices." = "Micro intégré, AirPods / casques Bluetooth et micros filaires ou USB-C. La caméra se choisit dans l'écran d'entraînement (bouton 🔄) — les caméras USB-C externes y apparaissent sur les appareils compatibles.";
+"Switch camera" = "Changer de caméra";
+"No cameras found" = "Aucune caméra trouvée";
+"%@ (front)" = "%@ (avant)";
+"Speech recognition is unavailable right now (language not downloaded, or no network for server-based recognition)." = "La reconnaissance vocale est indisponible (langue non téléchargée, ou pas de réseau pour la reconnaissance côté serveur).";
+"The microphone produced no audio — check the selected mic." = "Le micro n'a produit aucun son — vérifiez le micro sélectionné.";

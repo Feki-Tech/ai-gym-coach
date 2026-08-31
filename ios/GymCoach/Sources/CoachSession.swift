@@ -20,6 +20,7 @@ final class CoachSession: ObservableObject {
     @Published private(set) var transcript: [ChatLine] = []
     @Published private(set) var busy = false
     @Published private(set) var lastReply = ""
+    @Published private(set) var handsFreeOn = false
     @Published var draft = ""
 
     let client = CoachClient.shared
@@ -39,6 +40,40 @@ final class CoachSession: ObservableObject {
     }
 
     var isAvailable: Bool { client.isConfigured }
+    private var handsFreeInput: SpeechInput?
+    private var gateTimer: Timer?
+
+    // MARK: - hands-free listening (like the desktop: just speak)
+
+    /// Continuous mic, gated while the coach thinks or talks so it never
+    /// hears its own voice; each finished utterance becomes a question.
+    func startHandsFree(_ input: SpeechInput) {
+        guard handsFreeInput == nil else { return }
+        handsFreeInput = input
+        handsFreeOn = true
+        input.onUtterance = { [weak self] text in self?.ask(text) }
+        input.startHandsFree()
+        gateTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.gate() }
+        }
+    }
+
+    func stopHandsFree() {
+        gateTimer?.invalidate()
+        gateTimer = nil
+        handsFreeInput?.stopHandsFree()
+        handsFreeInput = nil
+        handsFreeOn = false
+    }
+
+    private func gate() {
+        guard let input = handsFreeInput else { return }
+        if busy || speech.isSpeaking {
+            input.pause()
+        } else {
+            input.resume()
+        }
+    }
 
     // MARK: - talking
 

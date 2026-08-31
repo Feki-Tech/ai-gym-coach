@@ -76,7 +76,20 @@ struct CoachChatView: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
-            if speechIn.listening {
+            if session.handsFreeOn {
+                HStack(spacing: 6) {
+                    Image(systemName: "mic.fill")
+                        .foregroundStyle(speechIn.state == .hearing ? .cyan
+                                         : speechIn.state == .listening ? .green : .secondary)
+                    Text(speechIn.state == .hearing && !speechIn.partial.isEmpty
+                         ? speechIn.partial
+                         : NSLocalizedString("Hands-free: just speak — the coach can't hear you while it talks", comment: ""))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Spacer()
+                    micMenu
+                }
+                .padding(.horizontal)
+            } else if speechIn.state == .holdRecording {
                 HStack {
                     Image(systemName: "waveform").foregroundStyle(.red)
                     Text(speechIn.partial.isEmpty ? NSLocalizedString("Listening… release to send", comment: "") : speechIn.partial)
@@ -97,13 +110,13 @@ struct CoachChatView: View {
                     .onSubmit(send)
                 Button(action: send) { Image(systemName: "paperplane.fill") }
                     .disabled(session.draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                Image(systemName: speechIn.listening ? "mic.fill" : "mic")
+                Image(systemName: speechIn.state == .holdRecording ? "mic.fill" : "mic")
                     .font(.title2)
-                    .foregroundStyle(speechIn.listening ? .red : .accentColor)
+                    .foregroundStyle(speechIn.state == .holdRecording ? .red : .accentColor)
                     .padding(8)
                     .gesture(
                         DragGesture(minimumDistance: 0)
-                            .onChanged { _ in if !speechIn.listening { startTalking() } }
+                            .onChanged { _ in if speechIn.state != .holdRecording { startTalking() } }
                             .onEnded { _ in Task { await stopTalking() } })
                     .accessibilityLabel("Hold to talk")
                 if session.busy {
@@ -125,19 +138,45 @@ struct CoachChatView: View {
     private func startTalking() {
         session.interrupt()
         Task {
-            if await speechIn.requestPermissions() { speechIn.start() }
+            if await speechIn.requestPermissions() { speechIn.startHold() }
         }
     }
 
     private func stopTalking() async {
-        let text = await speechIn.stop()
+        let text = await speechIn.stopHold()
         if !text.isEmpty { session.ask(text) }
+    }
+
+    private var micMenu: some View {
+        Menu {
+            Button {
+                speechIn.preferredMicUID = ""
+            } label: {
+                speechIn.preferredMicUID.isEmpty
+                    ? AnyView(Label("System default", systemImage: "checkmark"))
+                    : AnyView(Text("System default"))
+            }
+            ForEach(speechIn.availableMics) { mic in
+                Button {
+                    speechIn.preferredMicUID = mic.id
+                } label: {
+                    mic.id == speechIn.preferredMicUID
+                        ? AnyView(Label(mic.name, systemImage: "checkmark"))
+                        : AnyView(Text(mic.name))
+                }
+            }
+        } label: {
+            Image(systemName: "mic.badge.plus").font(.subheadline)
+        }
+        .onTapGesture { speechIn.refreshMics() }
+        .accessibilityLabel("Microphone")
     }
 }
 
 /// Where the desktop coach lives: URL + pairing code, connection test.
 struct CoachSettingsView: View {
     @ObservedObject private var client = CoachClient.shared
+    @StateObject private var mic = SpeechInput()
     @State private var checking = false
     @State private var url = ""
     @State private var code = ""
@@ -174,6 +213,23 @@ struct CoachSettingsView: View {
                 } else {
                     Text("Not paired yet.").foregroundStyle(.secondary)
                 }
+            }
+            Section {
+                Picker("Microphone", selection: $mic.preferredMicUID) {
+                    Text("System default").tag("")
+                    ForEach(mic.availableMics) { m in
+                        Text(m.name).tag(m.id)
+                    }
+                }
+                Button {
+                    mic.refreshMics()
+                } label: {
+                    Label("Refresh microphones", systemImage: "arrow.clockwise")
+                }
+            } header: {
+                Text("Microphone")
+            } footer: {
+                Text("Built-in, AirPods / Bluetooth headsets and wired or USB-C microphones. The camera is picked in the workout screen (🔄 button) — external USB-C cameras appear there on supported devices.")
             }
             Section {
                 Text("What the coach sees: your live set (exercise, phase, reps, last rep's score, tempo and faults), your history and profile on the PC, and its knowledge base (form faults, programming, recovery, nutrition, 870+ exercises). It can switch exercise, set a rep goal, start a rest, set tempo, mute cues, log the load and run a guided program — say it and it happens.")

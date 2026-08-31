@@ -41,6 +41,7 @@ final class WorkoutViewModel: ObservableObject {
         // workout screen observes the view model, so forward their changes
         coach.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         speechIn.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
+        camera.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
     }
 
     func start() {
@@ -66,6 +67,12 @@ final class WorkoutViewModel: ObservableObject {
         health.startLiveHeartRate()
         if voiceOn { speech.say(NSLocalizedString("Ready. Let's go!", comment: "")) }
         if coach.isAvailable {
+            Task {                                   // hands-free mic, like the desktop
+                if await speechIn.requestPermissions() {
+                    coach.startHandsFree(speechIn)
+                    flash(NSLocalizedString("Hands-free mic is on — just speak", comment: ""))
+                }
+            }
             Task {                                   // greeting from last time
                 if let brief = await coach.client.brief(exercise: engine.exercise) {
                     coach.notify("session_start", payload: brief)
@@ -158,6 +165,7 @@ final class WorkoutViewModel: ObservableObject {
 
     func endSet() {
         camera.stop()
+        coach.stopHandsFree()
         coach.interrupt()
         let end = Date()
         let hr = health.stopLiveHeartRate()
@@ -231,6 +239,7 @@ struct WorkoutView: View {
             UIApplication.shared.isIdleTimerDisabled = false
             vm.camera.stop()
             vm.health.stopLiveHeartRate()
+            vm.coach.stopHandsFree()
             vm.coach.interrupt()
         }
         .sheet(item: $vm.summary) { rec in
@@ -269,6 +278,7 @@ struct WorkoutView: View {
                 HStack {
                     Text(displayName(ex)).font(.headline)
                     Spacer()
+                    if vm.coach.handsFreeOn { micPill }
                     if let hr = health.heartRate { heartRatePill(hr, zone: health.heartRateZone) }
                     phasePill
                 }
@@ -326,6 +336,26 @@ struct WorkoutView: View {
                 .rotationEffect(.degrees(-90))
         }
         .frame(width: 28, height: 28)
+    }
+
+    private var micPill: some View {
+        let (label, color): (String, Color) = {
+            switch vm.speechIn.state {
+            case .hearing: return (NSLocalizedString("hearing you…", comment: ""), .cyan)
+            case .listening: return (NSLocalizedString("listening", comment: ""), .green)
+            case .paused: return (NSLocalizedString("coach talking", comment: ""), .gray)
+            default: return (NSLocalizedString("mic off", comment: ""), .gray)
+            }
+        }()
+        return HStack(spacing: 4) {
+            Image(systemName: "mic.fill")
+            Text(label).font(.caption2)
+            Capsule().fill(color).frame(width: CGFloat(4 + 16 * vm.speechIn.level), height: 4)
+        }
+        .font(.caption)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(color.opacity(0.3), in: Capsule())
+        .foregroundColor(.white)
     }
 
     private func heartRatePill(_ hr: Double, zone: Int?) -> some View {
@@ -446,6 +476,7 @@ struct WorkoutView: View {
                     .font(.subheadline.bold()).padding(.vertical, 12).frame(maxWidth: .infinity)
                     .background(.purple.opacity(vm.coach.isAvailable ? 0.9 : 0.5), in: Capsule()).foregroundColor(.white)
             }
+            cameraMenu
             Button { vm.toggleRest() } label: {
                 Image(systemName: vm.hud.restLeft > 0 ? "timer.circle.fill" : "timer")
                     .font(.title2).padding(10).background(.black.opacity(0.55), in: Circle()).foregroundColor(.white)
@@ -464,6 +495,32 @@ struct WorkoutView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 20)
+    }
+
+    private var cameraMenu: some View {
+        Menu {
+            ForEach(vm.camera.available) { cam in
+                Button {
+                    vm.camera.select(cam.id)
+                    vm.flash(cam.label)
+                } label: {
+                    if cam.id == vm.camera.current?.id {
+                        Label(cam.label, systemImage: "checkmark")
+                    } else {
+                        Text(cam.label)
+                    }
+                }
+            }
+            if vm.camera.available.isEmpty {
+                Text("No cameras found")
+            }
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.title2).padding(10)
+                .background(.black.opacity(0.55), in: Circle()).foregroundColor(.white)
+        }
+        .onTapGesture { vm.camera.refreshAvailable() }
+        .accessibilityLabel("Switch camera")
     }
 
     private var restOverlay: some View {
