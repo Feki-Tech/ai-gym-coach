@@ -33,3 +33,19 @@
 "hint.side_head" = "साइड, कैमरा सिर की ऊँचाई पर";
 "hint.side_45knee" = "साइड (घुटनों के लिए 45° सामने)";
 "hint.front" = "सामने से";
+
+/* Programs, goals, records */
+"program.reps_target" = "%ld रेप्स";
+"program.hold_target" = "%ld सेकंड होल्ड";
+"program.set_done" = "सेट %ld/%ld पूरा — %ld सेकंड आराम, फिर सेट %ld: %@।";
+"program.block_done" = "%@ पूरा! %ld सेकंड आराम, फिर %@: %@ के %ld सेट।";
+"program.complete" = "वर्कआउट पूरा — यह आख़िरी सेट था। आज शानदार काम!";
+"program.start" = "वर्कआउट प्रोग्राम: %@। पहले %@ — %@। चलो!";
+"program.next" = "अगला: %@ · सेट %ld/%ld · %@";
+"coach.rest_over" = "आराम ख़त्म — काम पर वापस!";
+"coach.tempo_slower" = "नीचे जाते समय धीमे — %.0f सेकंड का लक्ष्य रखें।";
+"coach.pr_reps" = "नया रिकॉर्ड — %ld रेप्स, अब तक का सबसे ज़्यादा!";
+"coach.goal_reached" = "%ld हो गए — लक्ष्य पूरा! आराम करें।";
+"pr.reps" = "एक सत्र में सबसे ज़्यादा रेप्स: %ld";
+"pr.e1rm" = "अनुमानित 1RM: %.1f किग्रा";
+"pr.hold" = "सबसे लंबा होल्ड: %.0f सेकंड";

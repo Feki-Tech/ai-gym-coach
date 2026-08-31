@@ -33,3 +33,19 @@
 "hint.side_head" = "lateral, cámara a la altura de la cabeza";
 "hint.side_45knee" = "lateral (45° frontal para las rodillas)";
 "hint.front" = "vista frontal";
+
+/* Programs, goals, records */
+"program.reps_target" = "%ld repeticiones";
+"program.hold_target" = "%ld segundos de aguante";
+"program.set_done" = "Serie %ld de %ld hecha — descansa %ld segundos, luego serie %ld: %@.";
+"program.block_done" = "¡%@ hecho! Descansa %ld segundos, luego %@: %ld series de %@.";
+"program.complete" = "Entrenamiento completado — era la última serie. ¡Gran trabajo!";
+"program.start" = "Programa: %@. Primero, %@ — %@. ¡Vamos!";
+"program.next" = "siguiente: %@ · serie %ld/%ld · %@";
+"coach.rest_over" = "Fin del descanso — ¡a trabajar!";
+"coach.tempo_slower" = "Más lento al bajar — apunta a %.0f segundos.";
+"coach.pr_reps" = "¡Nuevo récord — %ld repeticiones, tu máximo!";
+"coach.goal_reached" = "¡Son %ld — objetivo cumplido! Descansa.";
+"pr.reps" = "máximo de repeticiones en una sesión: %ld";
+"pr.e1rm" = "1RM estimado: %.1f kg";
+"pr.hold" = "aguante más largo: %.0f s";

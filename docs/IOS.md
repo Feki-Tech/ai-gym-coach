@@ -230,7 +230,59 @@ in the Keychain (`AfterFirstUnlockThisDeviceOnly`); no tokens are kept.
 Empty ids simply hide those buttons, so the CI simulator build needs no
 secrets.
 
-## 8. Testing on your own iPhone — no Mac, no paid account
+## 8. The interactive coach on the phone
+
+The LLM coach cannot run on the phone, and it should not lose anything by
+moving: the persona, the retrieval over the knowledge base and the exercise
+catalogue, the safety guardrails, the history/profile tools and the
+behaviour evals all live in Python. So the phone **talks to the desktop
+coach over your Wi‑Fi**:
+
+```bash
+# on the PC, in the ai-gym-coach folder (Ollama running, as for --coach)
+python coach_server.py
+#   Coach server on http://192.168.1.20:7799
+#   Pairing code: 7F3A2C   ← enter both once in the app: home → 💬 → Coach settings
+```
+
+`coach_server.py` (standard library, selftested) exposes the same
+`ChatCoach` the desktop uses: `/chat` and `/event` stream the answer
+sentence by sentence (SSE) with the phone's **live session** attached to
+every message — exercise, phase, reps, last rep's score/tempo/faults, joint
+angle, heart rate, rest/goal/load/program state — plus `/log` (the finished
+set lands in the desktop `workout_log.json`, so the web dashboard and the
+desktop history include phone sessions), `/history`, `/brief`,
+`/knowledge`, `/exercises`, `/profile`. Every request carries the pairing
+code as a bearer token; it is meant for your own network (TLS proxy or VPN
+beyond that). `docker compose up coach-server` runs it next to Ollama.
+
+On the phone, once paired:
+
+- **Talk** button (or the coach panel) opens the chat: type, or **hold the
+  mic** and speak — on-device speech recognition, only the text leaves the
+  phone. Answers stream in and are spoken sentence by sentence; a new
+  question interrupts the old answer (barge-in).
+- The coach **speaks up on its own**: greets you with last session's key
+  point, debriefs every finished set (score trend, dominant fault, one cue)
+  and wraps up the session.
+- The coach **drives the workout** through the same ACTION protocol as the
+  desktop: "switch me to push-ups", "let's do 12 reps", "give me 90
+  seconds", "lower for 3 seconds", "stop correcting me", "I'm on 60 kilos",
+  "plan me a leg workout and start it" → exercise switch, rep goal ring,
+  rest overlay with countdown, tempo cue, cues muted, load logged (volume,
+  estimated 1RM, records), guided program (sets counted, rests run,
+  exercises switched, announcements spoken).
+- The HUD grew to match the desktop: range-of-motion gauge against the
+  exercise's *rep starts / full depth / lockout* lines, the faulty body part
+  turns red on the skeleton, phase in athlete terms (LOWERING / BOTTOM /
+  LIFTING), rep goal ring, load and record-to-beat, program strip, rest
+  overlay, heart-rate zone pill, personal-record cues; buttons for rest,
+  load and the coach.
+
+Without a paired server the app still counts, scores and speaks cues on
+its own — the Talk button just points you to the settings.
+
+## 9. Testing on your own iPhone — no Mac, no paid account
 
 Two free routes. Both use a **free Apple ID** (no $99 program): the app is
 signed with a personal certificate, runs for **7 days**, then must be
@@ -289,7 +341,7 @@ Route A/B become unnecessary: `.github/workflows/testflight.yml` signs and
 uploads to TestFlight from CI (§5), with all capabilities including Sign in
 with Apple, 90-day builds and up to 10,000 testers.
 
-## 9. Suggested next steps
+## 10. Suggested next steps
 
 - Read the Health snapshot into the LLM coach's context on desktop via the
   MCP bridge (export it from the phone, or sync the workout log).

@@ -33,3 +33,19 @@
 "hint.side_head" = "side, camera at head height";
 "hint.side_45knee" = "side (45° front for knee tracking)";
 "hint.front" = "front view";
+
+/* Programs, goals, records */
+"program.reps_target" = "%ld reps";
+"program.hold_target" = "%ld second hold";
+"program.set_done" = "Set %ld of %ld done — rest %ld seconds, then set %ld: %@.";
+"program.block_done" = "%@ done! Rest %ld seconds, then %@: %ld sets of %@.";
+"program.complete" = "Workout complete — that was the last set. Amazing work today!";
+"program.start" = "Workout program: %@. First up, %@ — %@. Let's go!";
+"program.next" = "next: %@ · set %ld/%ld · %@";
+"coach.rest_over" = "Rest over — back to work!";
+"coach.tempo_slower" = "Slower on the way down — aim for %.0f seconds.";
+"coach.pr_reps" = "New record — %ld reps, your most ever!";
+"coach.goal_reached" = "That's %ld — goal reached! Take your rest.";
+"pr.reps" = "most reps in a session: %ld";
+"pr.e1rm" = "estimated 1RM: %.1f kg";
+"pr.hold" = "longest hold: %.0f s";

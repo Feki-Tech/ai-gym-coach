@@ -4,6 +4,7 @@ import CoachCore
 struct HomeView: View {
     @State private var voiceOn = true
     @ObservedObject private var auth = AuthService.shared
+    @ObservedObject private var coachClient = CoachClient.shared
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
 
     var body: some View {
@@ -25,7 +26,16 @@ struct HomeView: View {
                     Label("Voice coaching", systemImage: "speaker.wave.2.fill")
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 24)
+
+                if !coachClient.isConfigured {
+                    NavigationLink { CoachSettingsView() } label: {
+                        Label("Pair with your coach to talk during the set", systemImage: "waveform.and.mic")
+                            .font(.footnote)
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                }
+                Spacer(minLength: 24)
             }
             .navigationTitle("AI Gym Coach")
             .toolbar {
@@ -36,6 +46,15 @@ struct HomeView: View {
                         Image(systemName: "heart.fill")
                     }
                     .accessibilityLabel("Apple Health")
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    NavigationLink {
+                        CoachSettingsView()
+                    } label: {
+                        Image(systemName: coachClient.isConfigured
+                              ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                    }
+                    .accessibilityLabel("Coach settings")
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {

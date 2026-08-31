@@ -44,6 +44,18 @@ targets:
           AI Gym Coach analyzes your exercise form live through the camera.
           Video is processed entirely on this device and is never stored or
           uploaded.
+        NSMicrophoneUsageDescription: >-
+          Hold the mic button to ask your coach a question by voice. Audio is
+          transcribed on this iPhone and only the text goes to your own coach
+          server on your Wi-Fi.
+        NSSpeechRecognitionUsageDescription: >-
+          Speech recognition turns your question into text for the coach.
+          On-device recognition is used when the iPhone supports it.
+        NSLocalNetworkUsageDescription: >-
+          The app talks to your coach server (coach_server.py) on the same
+          Wi-Fi network to answer questions and coach you live.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSHealthShareUsageDescription: >-
           AI Gym Coach reads your heart rate, resting heart rate, HRV, VO2
           max, weight, height, age, sleep, steps, active energy, exercise

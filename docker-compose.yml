@@ -123,6 +123,22 @@ services:
 
   # Progress dashboard — charts of your workout history in the browser.
   # Works on every OS. http://localhost:7788 after `docker compose up dashboard`.
+  # the coach as a paired API for the iPhone app (docs/IOS.md §8)
+  coach-server:
+    build: .
+    image: ai-gym-coach
+    entrypoint: ["python", "coach_server.py"]
+    command: ["--host", "0.0.0.0", "--log", "/data/workout_log.json"]
+    environment:
+      - COACH_LLM_BASE_URL=http://ollama:11434/v1
+      - COACH_PAIR_TOKEN=${COACH_PAIR_TOKEN:-}
+    ports:
+      - "7799:7799"
+    volumes:
+      - ./data:/data
+    depends_on:
+      - ollama
+
   dashboard:
     build: .
     image: ai-gym-coach
