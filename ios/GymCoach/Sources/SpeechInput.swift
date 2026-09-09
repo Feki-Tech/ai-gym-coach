@@ -9,6 +9,7 @@
 
 import Foundation
 import AVFoundation
+import AudioToolbox
 import Combine
 import Speech
 
@@ -102,9 +103,21 @@ final class SpeechInput: ObservableObject {
         catch { lastError = error.localizedDescription }
     }
 
+    /// System sounds that say what the mic is doing, like the desktop
+    /// earcons: a rising tone when the mic opens, a tick when your sentence
+    /// was captured. Off with the "Mic sounds" setting.
+    enum Earcon { case open, captured }
+
+    static func play(_ earcon: Earcon) {
+        guard UserDefaults.standard.object(forKey: "coach.earcons") as? Bool ?? true else { return }
+        AudioServicesPlaySystemSound(earcon == .open ? 1113 : 1114)   // begin/end record
+    }
+
     private func prepareAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .default,
+        // .voiceChat turns on Apple's acoustic echo cancellation, so the mic
+        // can stay open while the coach talks through the speaker
+        try? session.setCategory(.playAndRecord, mode: .voiceChat,
                                  options: [.duckOthers, .defaultToSpeaker,
                                            .allowBluetooth, .allowBluetoothA2DP])
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
@@ -144,10 +157,11 @@ final class SpeechInput: ObservableObject {
         state = .paused
     }
 
-    /// Coach finished: open the mic again.
-    func resume() {
+    /// Coach finished: open the mic again (`signal` plays the open tone).
+    func resume(signal: Bool = false) {
         guard handsFree, state == .paused else { return }
         beginRecognition()
+        if signal { Self.play(.open) }
     }
 
     private func tick() {
@@ -163,6 +177,7 @@ final class SpeechInput: ObservableObject {
         endRecognition()
         partial = ""
         if !text.isEmpty, text.count > 1 {
+            Self.play(.captured)
             onUtterance?(text)
             state = .paused          // the owner resumes once the reply is done
         } else if handsFree {

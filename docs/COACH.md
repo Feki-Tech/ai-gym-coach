@@ -131,28 +131,37 @@ and in plain `python coach_chat.py` alike.
 
 ### Hands-free listening
 
-The coach panel (bottom-right of the window) shows the mic state and a
-live level meter next to your last question and the streaming answer:
+The coach panel (bottom-right of the window) shows the mic state as a
+coloured pill with a one-line hint, a level meter that only moves while
+the mic is open, your last question and the streaming answer. The same
+five states drive the earcons you hear and the phone's pill — the full
+contract, and how it is tested, is in [VOICE.md](VOICE.md):
 
-| status | Meaning |
+| state | Meaning |
 |---|---|
-| `listening` | open mic — just talk |
-| `hearing you...` | speech detected, recording your sentence |
-| `thinking...` | transcribing locally (Whisper) |
-| `answering...` | the coach is replying — **it cannot hear you now** |
-| `press c to talk` | voice extras not installed → push-to-talk only |
-| `off` | mic unavailable (see Troubleshooting) |
+| `listening` (green) | open mic — just talk |
+| `hearing you…` (cyan) | speech detected, recording your sentence |
+| `thinking…` (amber) | captured (tick); transcribing / the LLM is working — counts the seconds, soft pulse every 5 s |
+| `coach speaking` (purple) | the coach is replying — **the mic is closed** on speakers (`c` interrupts), open with `--headset` (just talk) |
+| `mic off` (grey) | voice extras not installed / mic unavailable → type (see Troubleshooting) |
 
 Which microphone: the OS default, unless you pass `--mic 3` or
 `--mic "Camo"` (index or part of the name — `--list-devices` shows them; the
 `COACH_MIC` env var sets a permanent default). Works for both push-to-talk
 and hands-free, in `pose_coach.py --coach` and `coach_chat.py`.
 
-There is no echo cancellation: while the coach talks through your speakers
-the mic is gated so it never hears its own voice. To barge in, press `c`
-(mutes the coach + reopens the mic immediately) or type your question. A
-built-in voice-activity detector adapts to room noise, ignores coughs and
-clanking plates, and a filter drops non-speech transcriptions.
+There is no echo cancellation on speakers: while the coach talks the mic
+is closed so it never hears its own voice. To barge in, press `c` (mutes
+the coach, rising tone, mic open) or type your question. To keep that
+closed window short the coach reads **two sentences per answer** and says
+*"Say more for the rest."* — say **more** for the next two (no LLM call;
+the whole text is on screen; `--spoken-sentences 0` reads everything).
+With earbuds use **`--headset`**: the mic stays open, you just talk over
+the coach and it stops — its own voice leaking in is dropped by an echo
+filter (`python coach_voice.py --echo-check` tells you whether your
+speakers are quiet enough for that). A built-in voice-activity detector
+adapts to room noise, ignores coughs and clanking plates, and a filter
+drops non-speech transcriptions.
 
 The coach sees live session data — current exercise, phase, rep count, the
 last rep's physics (score, tempo, range of motion, speed, faults), your

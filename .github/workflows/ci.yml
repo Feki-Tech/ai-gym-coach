@@ -49,6 +49,8 @@ jobs:
         run: uv run python coach_devices.py --selftest
       - name: Run HUD selftests (on-screen UI renders every state)
         run: uv run python coach_hud.py --selftest
+      - name: Run voice turn-taking selftests (state machine, scenarios, earcons, WAV mic seam)
+        run: uv run python coach_voice.py --selftest
       - name: Run knowledge (RAG) selftests
         run: uv run python coach_knowledge.py --selftest
       - name: Run MCP server selftests

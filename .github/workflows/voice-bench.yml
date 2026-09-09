@@ -1,0 +1,86 @@
+name: voice-bench
+
+# The ears of the coach against REAL audio and the REAL speech model
+# (docs/VOICE.md). ci.yml gates the deterministic turn-taking harness on
+# every push (coach_voice.py --selftest: fake clock, fake mic); this job
+# synthesizes spoken questions (espeak-ng), gym noise and the coach's own
+# voice, feeds them through the real VAD → Whisper → echo filter → turn
+# machine, and reports word error rates and transcription times. Nightly
+# and on demand: a Whisper download + CPU transcription is a report to
+# read, not a build to block.
+
+on:
+  schedule:
+    - cron: "40 3 * * *"        # nightly 03:40 UTC
+  workflow_dispatch:
+    inputs:
+      whisper:
+        description: "Whisper model (COACH_WHISPER_MODEL)"
+        default: "base"
+        required: true
+      only:
+        description: "comma-separated fixture files or kinds (empty = all)"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.30"
+          enable-cache: true
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libgles2 libegl1 libglib2.0-0 espeak-ng libportaudio2
+      - name: Install dependencies with the voice extras (pinned from uv.lock)
+        run: uv sync --frozen --python 3.12 --extra voice
+      - name: Cache the speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ inputs.whisper || 'base' }}
+      - name: Synthesize the audio fixtures
+        run: uv run python coach_voice.py --make-fixtures data/voice_fixtures
+      - name: Deterministic harness first (fake clock, fake mic)
+        run: uv run python coach_voice.py --selftest
+      - name: Run the bench (real VAD → Whisper → echo filter → turn machine)
+        id: bench
+        continue-on-error: true
+        env:
+          COACH_WHISPER_MODEL: ${{ inputs.whisper || 'base' }}
+        run: |
+          set -o pipefail
+          ONLY="${{ inputs.only }}"
+          uv run python coach_voice.py --bench data/voice_fixtures \
+            ${ONLY:+--only "$ONLY"} --md voice_bench.md --json voice_bench.json \
+            | tee voice_bench_stdout.txt
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f voice_bench.md ]; then
+            cat voice_bench.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "bench did not produce a report — see logs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-bench-report
+          path: |
+            voice_bench.md
+            voice_bench.json
+            voice_bench_stdout.txt
+          if-no-files-found: ignore
+      - name: Fail the job if a hard fixture failed
+        if: steps.bench.outcome == 'failure'
+        run: exit 1

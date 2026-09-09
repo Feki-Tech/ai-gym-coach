@@ -284,10 +284,18 @@ On the phone, once paired:
 
 - **Hands-free by default**: when a coach server is paired, the mic starts
   listening as the set starts (after the one-time microphone + speech
-  permissions) — just speak, like on the desktop. A pill on the HUD shows
-  *listening / hearing you… / coach talking*; the mic is gated while the
-  coach thinks or talks so it never hears its own voice. Hold-to-talk in
-  the chat sheet remains as a fallback, and everything can still be typed.
+  permissions) — just speak, like on the desktop. A pill on the HUD and the
+  chat header show the same five states as the desktop — *listening /
+  hearing you… / thinking… / coach talking / mic off* — with a hint of
+  what you can do, and system sounds mark the mic opening and your
+  sentence being captured (*Mic sounds* in Coach settings). **Interrupt by
+  voice** (on by default) keeps the mic open while the coach talks using
+  the phone's echo cancellation: just talk over it; its own voice leaking
+  back is dropped by an echo filter. Turn it off on a loud speaker: the mic
+  then closes while the coach talks, answers are read two sentences at a
+  time and "more" fetches the rest. Hold-to-talk in the chat sheet remains
+  as a fallback, and everything can still be typed. The contract and the
+  tests behind it: [VOICE.md](VOICE.md).
 - **Pick your devices**: the 🔄 button in the workout screen switches
   between the phone's cameras (back, front — mirrored like a gym mirror —
   ultra-wide, telephoto) and, on iOS 17+, **external USB-C cameras**, so a

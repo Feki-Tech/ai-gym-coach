@@ -59,6 +59,7 @@ import coach_calendar
 import coach_knowledge
 import coach_ops
 import coach_profile
+import coach_voice
 
 DEFAULT_BASE = os.environ.get("COACH_LLM_BASE_URL", "http://localhost:11434/v1")
 DEFAULT_MODEL = os.environ.get("COACH_LLM_MODEL", "llama3.2:3b")
@@ -1205,51 +1206,81 @@ class VadSegmenter:
         return None
 
 
+# Test seam: a callable returning a stream with start()/read(n)/context
+# manager — coach_voice.WavMic plays WAV fixtures through the real loop.
+_TEST_MIC_FACTORY = None
+
+
 class HandsFreeListener:
     """Open-mic loop: VAD segments your speech -> local Whisper -> chat.
 
-    There is no acoustic echo cancellation, so the mic is *gated* while
-    the coach's TTS is talking (plus a short hangover) — it cannot hear
-    you over its own voice. Interrupt by typing, or press 'c' to silence
-    the coach and reopen the mic instantly.
+    Whether the mic is open is decided by the turn-taking machine
+    (coach_voice.TurnTaking): closed while the coach thinks or talks (there
+    is no acoustic echo cancellation), open all the time in full duplex
+    (--headset). Its state is what the HUD shows and what the earcons say;
+    the 'c' key hands it a barge-in.
     """
 
     RATE = 16000
     BLOCK = 480                    # 30 ms
     PRE_ROLL_BLOCKS = 15           # 450 ms of context kept before speech
     MIN_SPEECH_S = 0.35
-    TTS_HANGOVER_S = 0.6
 
-    def __init__(self, on_text, tts_active=None):
+    def __init__(self, on_text, tts_active=None, busy=None, turns=None,
+                 is_echo=None, clock=None):
         self.on_text = on_text
         self.tts_active = tts_active or (lambda: False)
-        self.state = "starting"
+        self.busy = busy or (lambda: False)
+        self.clock = clock or time.monotonic
+        self.turns = (turns if turns is not None
+                      else coach_voice.TurnTaking(clock=self.clock))
+        self.is_echo = is_echo or (lambda _text: False)
         self.level = 0.0               # rms/threshold ratio for HUD meters
+        self.error = ""
+        self.done = threading.Event()  # the loop ended (stream closed/lost)
         self._stop = threading.Event()
-        self._gate_until = 0.0
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._deaf_until = 0.0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    @property
+    def state(self) -> str:
+        return self.turns.state
 
     def stop(self):
         self._stop.set()
 
+    def deaf_for(self, seconds: float):
+        """Ignore the mic briefly: an earcon is playing through the speakers."""
+        self._deaf_until = max(self._deaf_until, self.clock() + seconds)
+
     def open_gate_now(self):
-        """Skip the post-TTS hangover (push-to-talk barge-in)."""
-        self._gate_until = 0.0
+        """The 'c' key: the coach was cut off — give the mic back now."""
+        self.turns.barge_in()
+
+    def _open_stream(self):
+        if _TEST_MIC_FACTORY is not None:
+            return _TEST_MIC_FACTORY()
+        import sounddevice as sd
+        return sd.InputStream(samplerate=self.RATE, channels=1,
+                              dtype="float32", blocksize=self.BLOCK,
+                              device=MIC_DEVICE)
+
+    def _run(self):
+        try:
+            self._loop()
+        finally:
+            self.done.set()
 
     def _loop(self):
-        import time as _t
-
         import numpy as np
         try:
-            import sounddevice as sd
-            stream = sd.InputStream(samplerate=self.RATE, channels=1,
-                                    dtype="float32", blocksize=self.BLOCK,
-                                    device=MIC_DEVICE)
+            stream = self._open_stream()
             stream.start()
         except Exception as e:
             print(f"(hands-free mic unavailable: {e})")
             print(_mic_hint())
-            self.state = "off"
+            self.error = str(e)
+            self.turns.mic_lost(hint="mic unavailable — type your question")
             return
         vad = VadSegmenter()
         pre: deque = deque(maxlen=self.PRE_ROLL_BLOCKS)
@@ -1257,30 +1288,36 @@ class HandsFreeListener:
         warn = _mic_volume_warning()
         if warn:
             print(warn)
-        self.state = "listening"
+        self.turns.mic_ready()
         with stream:
             while not self._stop.is_set():
                 try:
                     data, _ = stream.read(self.BLOCK)
                 except Exception as e:
                     print(f"(mic stream lost: {e})")
-                    self.state = "off"
+                    self.error = str(e)
+                    self.turns.mic_lost(hint="mic lost — type your question")
+                    return
+                if data is None:               # test mic exhausted
                     return
                 mono = np.squeeze(data)
-                now = _t.monotonic()
-                if self.tts_active():
-                    self._gate_until = now + self.TTS_HANGOVER_S
+                now = self.clock()
+                self.turns.observe(tts=self.tts_active(), busy=self.busy(),
+                                   now=now)
+                gated = not self.turns.gate_open or now < self._deaf_until
                 rms = float(np.sqrt(np.mean(mono ** 2)))
-                self.level = rms / vad.threshold
-                ev = vad.feed(rms, gated=now < self._gate_until)
+                self.level = 0.0 if gated else rms / vad.threshold
+                ev = vad.feed(rms, gated=gated)
                 if ev == "start":
                     utt = list(pre)
                     pre.clear()
-                    self.state = "hearing you..."
+                    self.turns.speech_start(now)
                 if vad.in_speech:
                     utt.append(mono)
                 else:
                     pre.append(mono)
+                    if gated:
+                        utt = []               # capture cut by the gate
                 if ev != "end":
                     continue
                 audio = np.concatenate(utt) if utt else np.zeros(1, "float32")
@@ -1288,18 +1325,22 @@ class HandsFreeListener:
                 speech_s = (len(audio) / self.RATE
                             - vad.end_blocks * vad.block_s)
                 if speech_s < self.MIN_SPEECH_S:   # clank/cough blip
-                    self.state = "listening"
+                    self.turns.blip(now)
                     continue
-                self.state = "thinking..."
+                self.turns.speech_end(now)
                 text = ""
                 try:
                     text = _transcribe_audio(audio)
                 except Exception as e:
                     print(f"(transcription failed: {e})")
+                now = self.clock()
+                if text and self.is_echo(text):
+                    self.turns.blip(now)       # the coach's own voice leaking in
+                    continue
+                self.turns.transcript(text, now)
                 if text:
                     print(f"\nYou (voice): {text}")
                     self.on_text(text)
-                self.state = "listening"
 
 
 class _Speaker:
@@ -1446,17 +1487,33 @@ class ActionGate:
 
 
 # ------------------------------------------- background chat for pose_coach
+MORE_HINT = "Say more for the rest."
+_MORE_RE = re.compile(
+    r"^\W*(more|say more|tell me more|go on|continue|the rest|details?|"
+    r"encore|la suite|continue[rz]?|weiter|mehr|m[áa]s|sigue|contin[úu]a|"
+    r"المزيد|كمل|أكمل|继续|更多)\W*$", re.I)
+
+
 class BackgroundChat:
-    """Terminal + push-to-talk chat running beside the workout loop.
+    """Terminal + hands-free chat running beside the workout loop.
 
     Answers stream in live and are spoken sentence-by-sentence. Barge-in:
     a new question typed (or spoken) while the coach is mid-answer cancels
     the rest of the reply — text, speech and LLM stream — and is answered
     next, so changing topic mid-sentence feels natural.
+
+    Turn-taking (whether the mic is open, what the HUD says, the earcons,
+    per-turn latency in the trace) lives in `self.turns`, a
+    coach_voice.TurnTaking. On speakers the mic is closed while the coach
+    talks, so `spoken_limit` caps how many sentences are read aloud per
+    answer — the rest waits for "more". With `full_duplex` (--headset) the
+    mic stays open and the athlete just talks over the coach.
     """
 
     def __init__(self, coach: ChatCoach, speak=None, stop_speaking=None,
-                 tts_active=None, hands_free: bool = False, on_action=None):
+                 tts_active=None, hands_free: bool = False, on_action=None,
+                 full_duplex: bool = False, spoken_limit: int | None = None,
+                 earcons=None):
         import queue
         self.coach = coach
         self.speak = speak or (lambda _msg: None)
@@ -1471,36 +1528,100 @@ class BackgroundChat:
         self._q: "queue.Queue[str]" = queue.Queue()
         self.hud_user: str | None = None   # what the HUD's coach panel shows
         self.hud_reply: str = ""
+        self.turns = coach_voice.TurnTaking(full_duplex=full_duplex,
+                                            on_effect=self._effect)
+        self.earcons = (earcons if earcons is not None
+                        else coach_voice.Earcons())
+        self.spoken: deque = deque(maxlen=8)  # recent coach sentences (echo)
+        self.spoken_limit = int(spoken_limit or 0)   # 0 = read everything
+        self._more: list[str] = []            # sentences waiting for "more"
+        self._more_hinted = False
+        self._spoken_n = 0
         self.listener: HandsFreeListener | None = None
         if hands_free:
-            if voice_input_available():
+            if voice_input_available() or _TEST_MIC_FACTORY is not None:
                 self.listener = HandsFreeListener(
-                    on_text=self.submit,
-                    tts_active=lambda: self.tts_active() or self._busy)
-                # preload Whisper now so the first utterance answers fast
-                threading.Thread(target=_load_whisper, daemon=True).start()
-                print("🎤 Hands-free mic is ON — just speak; the coach "
-                      "answers. It can't hear you while it is talking "
-                      "(press 'c' to cut it off and ask right away).")
+                    on_text=lambda t: self.submit(t, source="voice"),
+                    tts_active=self.tts_active, busy=lambda: self._busy,
+                    turns=self.turns, is_echo=self._is_echo)
+                if _TEST_MIC_FACTORY is None:
+                    # preload Whisper now so the first utterance answers fast
+                    threading.Thread(target=_load_whisper, daemon=True).start()
+                if full_duplex:
+                    print("🎤 Hands-free mic is ON (headset mode): just "
+                          "speak — and talk over the coach to interrupt it.")
+                else:
+                    print("🎤 Hands-free mic is ON — just speak; a tick means "
+                          "'got it', a rising tone means 'your turn'. The mic "
+                          "is closed while the coach talks: press 'c' to cut "
+                          "it off, say 'more' to hear the rest of a long "
+                          "answer (--headset keeps the mic open).")
             else:
+                self.turns.off_hint = ("voice extras not installed — "
+                                       "type your question")
                 print("(hands-free mic needs: pip install -r "
-                      "requirements-voice.txt — falling back to 'c' key)")
+                      "requirements-voice.txt — type your questions instead)")
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._stdin_loop, daemon=True).start()
 
     @property
     def status(self) -> str:
-        """One-word state for HUDs: listening / hearing you... / ..."""
-        if self._busy:
-            return "answering..."
-        if self.listener is not None:
-            return self.listener.state
-        return "press c to talk"
+        """Turn state for HUDs: off / listening / hearing / thinking /
+        speaking (coach_voice) — never 'listening' with the mic closed."""
+        self.turns.observe(tts=self.tts_active(), busy=self._busy)
+        return self.turns.state
+
+    @property
+    def label(self) -> str:
+        """What to print next to the mic icon ("thinking… 12 s")."""
+        return self.turns.label()
+
+    @property
+    def hint(self) -> str:
+        """What the athlete can do now ("press c to interrupt")."""
+        return self.turns.hint()
 
     @property
     def mic_level(self) -> float:
-        """Live input level as a multiple of the VAD threshold (HUD meter)."""
-        return self.listener.level if self.listener is not None else 0.0
+        """Live input level as a multiple of the VAD threshold (HUD meter);
+        0 while the mic is closed so the meter never shows the coach."""
+        if self.listener is None or not self.turns.gate_open:
+            return 0.0
+        return self.listener.level
+
+    def _effect(self, name: str):
+        """An earcon the turn machine asked for; the mic ignores it."""
+        if self.earcons.play(name) and self.listener is not None:
+            self.listener.deaf_for(self.earcons.duration_s(name) + 0.2)
+
+    def _is_echo(self, text: str) -> bool:
+        return coach_voice.looks_like_echo(text, list(self.spoken))
+
+    def _say(self, sentence: str):
+        """Speak a sentence and remember it for the echo filter."""
+        self.spoken.append(sentence)
+        self.speak(sentence)
+
+    def _speak_reply(self, sentence: str):
+        """Read a reply sentence aloud — unless this answer's spoken cap is
+        reached (speakers mode): then it waits for "more"."""
+        limit = 0 if self.turns.full_duplex else self.spoken_limit
+        if limit and self._spoken_n >= limit:
+            self._more.append(sentence)
+            return
+        self._spoken_n += 1
+        self._say(sentence)
+
+    def _speak_more(self, text: str):
+        """"more": read the next sentences held back by the spoken cap."""
+        n = self.spoken_limit or len(self._more)
+        chunk, self._more = self._more[:n], self._more[n:]
+        self.hud_user, self.hud_reply = text, " ".join(chunk)
+        print("\n🏋️  Coach: " + " ".join(chunk) + "\n")
+        for sent in chunk:
+            self._say(sent)
+        if self._more:
+            self._say(MORE_HINT)
 
     def _stdin_loop(self):
         try:
@@ -1511,8 +1632,10 @@ class BackgroundChat:
         except Exception:
             pass
 
-    def submit(self, text: str):
-        """Queue a question; interrupts any answer in progress (barge-in)."""
+    def submit(self, text: str, source: str = "typed"):
+        """Queue a question; interrupts any answer in progress (barge-in).
+        source: "typed" (terminal / phone) or "voice" (the listener already
+        told the turn machine about the transcript)."""
         if text.strip().lower() == "/calendar":
             if self.calendar is None:
                 print("\n(calendar not connected — see docs/COACH.md §5, "
@@ -1541,10 +1664,17 @@ class BackgroundChat:
         if confirmed is not None:
             self._run_confirmed(confirmed)
             return
-        if self._busy:
+        if source != "voice":
+            self.turns.typed(len(text.split()))
+        if _MORE_RE.match(text) and self._more:
+            self._speak_more(text)
+            return
+        if self._busy or self.tts_active():
             self._cancel.set()
             self.stop_speaking()
-            print("\n(interrupted — switching to your new question)")
+            if self._busy:
+                print("\n(interrupted — switching to your new question)")
+        self._more = []
         self.hud_user, self.hud_reply = text, ""
         self._q.put(text)
 
@@ -1571,7 +1701,7 @@ class BackgroundChat:
                         ack=ack)
         if ack:
             print(f"\n⚙️  {ack}")
-            self.speak(ack)
+            self._say(ack)
         self._q.put(self._app_message(
             "APP DATA", "The athlete confirmed and the app executed: "
             + (ack or fb or describe_action(action))
@@ -1592,7 +1722,7 @@ class BackgroundChat:
                     and self.on_action is not None):
                 ack = self.gate.arm(a)     # ask; execute on the athlete's yes
                 print(f"\n⚙️  {ack}")
-                self.speak(ack)
+                self._say(ack)
                 continue
             if do == "history_query":
                 ack, fb = execute_history_action(
@@ -1625,9 +1755,9 @@ class BackgroundChat:
             coach_ops.trace("action", do=do, ok=ok, ack=ack or "")
             if ack:
                 print(f"\n⚙️  {ack}")
-                self.speak(ack)
+                self._say(ack)
         if clean:
-            self.speak(clean)
+            self._speak_reply(clean)
 
     def _answer_once(self, text: str) -> str | None:
         """Stream one reply; returns [APP DATA] follow-up text when an
@@ -1650,6 +1780,9 @@ class BackgroundChat:
                 self._say_or_act(s, feedback)
         if buf.strip() and not self._cancel.is_set():
             self._say_or_act(buf.strip(), feedback)
+        if self._more and not self._more_hinted and not self._cancel.is_set():
+            self._more_hinted = True          # the rest waits for "more"
+            self._say(MORE_HINT)
         print("\n")
         if feedback and not self._cancel.is_set():
             return self._app_message(
@@ -1663,7 +1796,13 @@ class BackgroundChat:
             text = self._q.get()
             self._busy = True
             self._cancel.clear()
+            self._spoken_n = 0
+            self._more_hinted = False
             rounds = 1
+            is_app = getattr(self.coach, "is_app_message",
+                             lambda t: t.startswith("[APP "))
+            if not is_app(text):
+                self.turns.answer_started()   # from here on the voice is ours
             try:
                 followup = self._answer_once(text)
                 for _ in range(2):             # tool loop, hard-capped
@@ -1676,8 +1815,6 @@ class BackgroundChat:
                                     exhausted=bool(followup))
                 # app messages are not athlete statements — never mine them
                 # for profile facts
-                is_app = getattr(self.coach, "is_app_message",
-                                 lambda t: t.startswith("[APP "))
                 if not is_app(text):
                     learn = getattr(self.coach, "learn_async", None)
                     if learn:
@@ -1724,7 +1861,7 @@ class BackgroundChat:
         if self.listener is not None:
             self._cancel.set()
             self.stop_speaking()
-            self.listener.open_gate_now()
+            self.turns.barge_in()
             print("\n(coach muted — mic open, go ahead)")
             return
 
@@ -1756,8 +1893,14 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
                           tts_active=None, hands_free: bool = False,
                           log_path: str = DEFAULT_LOG,
                           profile_db: str | None = "",
-                          on_action=None) -> BackgroundChat:
-    """profile_db: "" = default file, None = memory disabled."""
+                          on_action=None, full_duplex: bool = False,
+                          spoken_limit: int | None = None) -> BackgroundChat:
+    """profile_db: "" = default file, None = memory disabled.
+    full_duplex: --headset (mic stays open while the coach talks).
+    spoken_limit: sentences read aloud per answer on speakers, then "more"
+    (None = COACH_SPOKEN_SENTENCES, default 2; 0 = everything)."""
+    if spoken_limit is None:
+        spoken_limit = int(os.environ.get("COACH_SPOKEN_SENTENCES", "2") or 0)
     profile = None
     if profile_db is not None:
         try:
@@ -1792,7 +1935,8 @@ def start_background_chat(state_provider=None, speak=None, stop_speaking=None,
               "week or book a training session. /calendar shows the agenda.")
     return BackgroundChat(coach, speak=speak, stop_speaking=stop_speaking,
                           tts_active=tts_active, hands_free=hands_free,
-                          on_action=on_action)
+                          on_action=on_action, full_duplex=full_duplex,
+                          spoken_limit=spoken_limit)
 
 
 # ------------------------------------------------------------ interactive
@@ -1849,7 +1993,9 @@ def interactive(args):
                   f"{coach.client.base_url}")
             BackgroundChat(coach, speak=speaker.say,
                            stop_speaking=speaker.stop,
-                           tts_active=speaker.is_speaking, hands_free=True)
+                           tts_active=speaker.is_speaking, hands_free=True,
+                           full_duplex=args.headset,
+                           spoken_limit=args.spoken_sentences)
             print("Speak anytime — typing works too. Ctrl+C quits.")
             try:
                 while True:
@@ -2690,6 +2836,116 @@ def selftest():
         MIC_DEVICE = None
     print("OK")
 
+    print("23) turn-taking through BackgroundChat: honest status, spoken cap "
+          "+ 'more', barge-in metrics, turn trace:", end=" ")
+    import tempfile
+
+    class SlowCoach:
+        def __init__(self): self.calls = []
+
+        def ask_stream(self, text, cancel=None):
+            self.calls.append(text)
+            for s in ("One. ", "Two. ", "Three. ", "Four. "):
+                if cancel is not None and cancel.is_set():
+                    return
+                yield s
+                _time.sleep(0.01)
+
+    class FakeSpeaker:
+        """Each sentence 'plays' for 60 ms on its own thread."""
+        def __init__(self):
+            self.said, self.stops, self._n = [], 0, 0
+            self._lock = threading.Lock()
+
+        def say(self, s):
+            self.said.append(s)
+            with self._lock:
+                self._n += 1
+            threading.Thread(target=self._play, daemon=True).start()
+
+        def _play(self):
+            _time.sleep(0.06)
+            with self._lock:
+                self._n = max(0, self._n - 1)
+
+        def is_speaking(self): return self._n > 0
+
+        def stop(self):
+            self.stops += 1
+            with self._lock:
+                self._n = 0
+
+    def wait_for(cond, timeout=6.0):
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if cond():
+                return True
+            _time.sleep(0.005)
+        return False
+
+    tones = []
+    sc, sp = SlowCoach(), FakeSpeaker()
+    with tempfile.TemporaryDirectory() as td:
+        coach_ops.configure(os.path.join(td, "t.jsonl"))
+        try:
+            with redirect_stdout(io.StringIO()):
+                bc = BackgroundChat(
+                    sc, speak=sp.say, stop_speaking=sp.stop,
+                    tts_active=sp.is_speaking, spoken_limit=2,
+                    earcons=coach_voice.Earcons(
+                        enabled=True, player=lambda w, r: tones.append(1)))
+                bc.turns.mic_ready()            # a mic opened (no listener)
+                assert bc.status == "listening" and bc.hint == "just talk"
+                bc.turns.speech_start()
+                bc.turns.speech_end()
+                bc.turns.transcript("how deep should I squat")
+                assert bc.status == "thinking"
+                bc.submit("how deep should I squat", source="voice")
+                seen, lies = set(), 0
+                deadline = _time.time() + 6
+                while _time.time() < deadline:
+                    st = bc.status
+                    seen.add(st)
+                    if sp.is_speaking() and st == "listening":
+                        lies += 1
+                    if st == "listening" and "speaking" in seen:
+                        break
+                    _time.sleep(0.003)
+            assert lies == 0, "status said listening while the coach talked"
+            assert {"speaking", "listening"} <= seen, seen
+            assert sp.said == ["One.", "Two.", MORE_HINT], sp.said
+            assert bc._more == ["Three.", "Four."]
+            assert bc.turns.turns and bc.turns.turns[-1]["source"] == "voice"
+            assert bc.turns.turns[-1]["ttfa_ms"] is not None
+            assert not bc.turns.turns[-1]["interrupted"]
+            assert tones, "no earcon played when the mic came back"
+            with redirect_stdout(io.StringIO()):
+                bc.submit("more")                # the rest, no LLM call
+                assert wait_for(lambda: len(sp.said) == 5 and
+                                bc.status == "listening")
+            assert sp.said[3:] == ["Three.", "Four."] and sc.calls == [
+                "how deep should I squat"], (sp.said, sc.calls)
+            assert bc.hud_reply == "Three. Four."
+            with redirect_stdout(io.StringIO()):
+                bc.submit("second")
+                assert wait_for(lambda: bc.status == "speaking")
+                bc.submit("third")               # typed barge-in mid-answer
+                assert wait_for(lambda: sc.calls == [
+                    "how deep should I squat", "second", "third"]
+                    and bc.status == "listening")
+            assert sp.stops >= 1
+            flags = [t["interrupted"] for t in bc.turns.turns]
+            assert flags.count(True) == 1, flags
+            rows = coach_ops.load_trace(os.path.join(td, "t.jsonl"))
+            turns = [r for r in rows if r["kind"] == "turn"]
+            assert len(turns) == len(bc.turns.turns) >= 4, len(turns)
+            assert all("ttfa_ms" in r and "user_text" not in r for r in turns)
+            assert "voice turns" in coach_ops.format_report(
+                coach_ops.summarize_trace(rows))
+        finally:
+            coach_ops.configure(None)
+    print("ok")
+
     print("\nAll coach_chat selftests passed.")
 
 
@@ -2715,6 +2971,17 @@ if __name__ == "__main__":
                     help="microphone for --listen/--hands-free: sounddevice "
                          "index or a part of its name (default: OS default, "
                          "env COACH_MIC; see --list-devices)")
+    ap.add_argument("--headset", action="store_true",
+                    default=os.environ.get("COACH_HEADSET", "") == "1",
+                    help="--hands-free with earbuds/headset: the mic stays "
+                         "open while the coach talks so you can interrupt "
+                         "by voice (env COACH_HEADSET=1; check with "
+                         "coach_voice.py --echo-check)")
+    ap.add_argument("--spoken-sentences", type=int, metavar="N",
+                    default=int(os.environ.get("COACH_SPOKEN_SENTENCES", "2")),
+                    help="--hands-free on speakers: read N sentences per "
+                         "answer, then 'Say more for the rest' (0 = all; "
+                         "default 2, env COACH_SPOKEN_SENTENCES)")
     ap.add_argument("--list-devices", action="store_true",
                     help="show microphones, speakers and cameras, then exit")
     ap.add_argument("--once", metavar="QUESTION",
