@@ -122,6 +122,12 @@ C_CYAN = (235, 220, 34)
 C_SKEL = (110, 235, 90)
 C_SKEL_DIM = (120, 120, 120)
 C_HR_ZONE = {1: C_BLUE, 2: C_GREEN, 3: C_AMBER, 4: (30, 140, 250), 5: C_RED}
+# the coach's turn-taking states (coach_voice): one colour each, everywhere
+MIC_COLORS = {"listening": C_GREEN, "hearing": C_CYAN, "thinking": C_AMBER,
+              "speaking": C_PURPLE, "off": C_MUTED}
+MIC_LABELS = {"listening": "listening", "hearing": "hearing you…",
+              "thinking": "thinking…", "speaking": "coach speaking",
+              "off": "mic off"}
 
 
 def score_color(score: float | None):
@@ -368,7 +374,7 @@ class HudState:
     program_overview: str | None = None
     hr: int | None = None
     hr_zone: int | None = None
-    chat: dict | None = None              # status, level, user, reply, hint
+    chat: dict | None = None              # status, label, hint, level, user, reply
     voice_on: bool = True
     mirrored: bool = False
     fps: float = 0.0
@@ -823,42 +829,78 @@ class Hud:
         if c.get("reply"):
             rl = self.text.wrap(c["reply"], size, False, cw - 2 * pad)
             lines += [("coach", ln) for ln in rl[-5:]]
+        status, label, hint = self.mic_state(c)
         if not lines:
             lines = [("hint", ln) for ln in self.text.wrap(
-                c.get("hint") or "Ask me anything — just speak, or type in "
-                "the terminal.", size, False, cw - 2 * pad)]
-        ch = pad * 2 + int(26 * u) + lh * len(lines)
+                "Type your question in the terminal." if status == "off"
+                else "Ask me anything — just speak, or type in the terminal.",
+                size, False, cw - 2 * pad)]
+        hint_lines = self.text.wrap(hint, int(11 * u), False, cw - 2 * pad)[:1] \
+            if hint else []
+        head = int(30 * u) + (int(15 * u) if hint_lines else 0)
+        ch = pad * 2 + head + lh * len(lines)
         x0 = w - cw - int(16 * u)
         y1 = h - int(44 * u)
         y0 = y1 - ch
         panel(frame, x0, y0, x0 + cw, y1, alpha=0.7)
-        self.text.add(frame, x0 + pad, y0 + pad - 2 * u, "COACH", int(12 * u),
+        self.text.add(frame, x0 + pad, y0 + pad, "COACH", int(12 * u),
                       C_PURPLE, True)
-        status = c.get("status", "")
-        scol = (C_CYAN if "hearing" in status else C_GREEN if status == "listening"
-                else C_PURPLE if "answer" in status else C_MUTED)
-        slabel = {"listening": "● listening", "answering...": "● answering"}.get(
-            status, "● " + status if status else "")
-        if "hearing" in status:
-            slabel = "● hearing you…"
+        scol = MIC_COLORS.get(status, C_MUTED)
         sx = x0 + cw - pad
-        # mic level meter: 8 segments, lit up to the live level
-        level = float(c.get("level") or 0.0)
+        # the state pill: filled with the state colour so it reads from
+        # across the room — listening (green) / hearing (cyan) /
+        # thinking (amber) / speaking (purple) / off (grey)
+        ptxt = "● " + label
+        pw, ph = self.text.measure(ptxt, int(12 * u), True)
+        px1 = sx
+        px0 = px1 - pw - int(16 * u)
+        py0 = y0 + pad - int(3 * u)
+        py1 = py0 + int(20 * u)
+        rounded_rect(frame, px0, py0, px1, py1, scol, int(10 * u))
+        self.text.add(frame, px0 + int(8 * u), py0 + int(3 * u), ptxt,
+                      int(12 * u), C_PANEL, True)
+        # mic level meter: 8 segments, lit up to the live level (only lit
+        # while the mic is open — it never shows the coach's own voice)
+        level = float(c.get("level") or 0.0) if status in (
+            "listening", "hearing") else 0.0
         segs = 8
         seg_w = int(5 * u)
-        mx = sx - segs * (seg_w + int(2 * u))
+        mx = px0 - int(10 * u) - segs * (seg_w + int(2 * u))
         for i in range(segs):
             lit = level * 3 > i
-            rounded_rect(frame, mx + i * (seg_w + int(2 * u)), y0 + pad + int(2 * u),
-                         mx + i * (seg_w + int(2 * u)) + seg_w, y0 + pad + int(12 * u),
+            rounded_rect(frame, mx + i * (seg_w + int(2 * u)), py0 + int(5 * u),
+                         mx + i * (seg_w + int(2 * u)) + seg_w, py0 + int(15 * u),
                          scol if lit else (70, 64, 58), int(2 * u))
-        self.text.add(frame, mx - int(8 * u), y0 + pad - 2 * u, slabel, int(11 * u),
-                      scol, True, "r")
         y = y0 + pad + int(24 * u)
+        for ln in hint_lines:
+            self.text.add(frame, sx, y - int(2 * u), ln, int(11 * u), scol,
+                          False, "r")
+            y += int(15 * u)
+        y += int(6 * u)
         for kind, ln in lines:
             col = {"you": C_MUTED, "coach": C_TEXT, "hint": C_DIM}[kind]
             self.text.add(frame, x0 + pad, y, ln, size, col)
             y += lh
+
+    @staticmethod
+    def mic_state(c: dict) -> tuple[str, str, str]:
+        """(state, label, hint) from a chat dict — coach_voice states, with
+        the pre-turn-taking status strings mapped for old callers."""
+        status = str(c.get("status") or "")
+        if status not in MIC_COLORS:
+            if "hearing" in status:
+                status = "hearing"
+            elif "think" in status:
+                status = "thinking"
+            elif "answer" in status or "speak" in status:
+                status = "speaking"
+            elif status == "listening":
+                status = "listening"
+            else:
+                status = "off"
+        label = c.get("label") or MIC_LABELS.get(status, status)
+        hint = c.get("hint") or ""
+        return status, label, hint
 
     # ---- footer: keys + status
     def draw_footer(self, frame, st: HudState, w, h, u):
@@ -1139,7 +1181,8 @@ def demo_states() -> dict[str, tuple[np.ndarray | None, HudState]]:
         last_score=85, similarity=72, has_reference=True, tempo=(1.4, 0.9),
         velocity_ratio=0.93, signal_value=112.0, faults_now=["knees_cave"],
         cue="Push your knees out — don't let them cave in.", cue_kind="fault",
-        chat={"status": "listening", "level": 1.2,
+        chat={"status": "listening", "label": "listening", "hint": "just talk",
+              "level": 1.2,
               "user": "why do my knees hurt at the bottom?",
               "reply": "Your knees are caving in on the way up — that loads the "
                        "inside of the joint. Screw your feet into the floor and "
@@ -1171,9 +1214,31 @@ def demo_states() -> dict[str, tuple[np.ndarray | None, HudState]]:
         signal_value=130.0, faults_now=["back_lean"],
         cue="You're slowing down — keep form tight or end the set.",
         cue_kind="fatigue", recording_reference=True, tempo_target=2.0,
-        chat={"status": "answering...", "level": 0.0, "user": None,
+        chat={"status": "speaking", "label": "coach speaking",
+              "hint": "press c to interrupt", "level": 0.0, "user": None,
               "reply": "Set 2 done: scores fell from 90 to 55 and your back "
                        "started leaning — rest a full 90 seconds."}))
+    # the mic states an athlete must be able to tell apart at a glance
+    mic = dict(**base, phase="ASCENT", reps=4, rep_goal=10,
+               rep_scores=[88, 84, 90, 86], last_score=86, signal_value=140.0)
+    out["mic_hearing"] = (figure(0.4), HudState(
+        **mic, chat={"status": "hearing", "label": "hearing you…",
+                     "hint": "finish your sentence", "level": 2.4,
+                     "user": None, "reply": ""}))
+    out["mic_thinking"] = (figure(0.4), HudState(
+        **mic, chat={"status": "thinking", "label": "thinking… 4 s",
+                     "hint": "hang on", "level": 0.0,
+                     "user": "plan my next leg day", "reply": ""}))
+    out["mic_headset"] = (figure(0.4), HudState(
+        **mic, chat={"status": "speaking", "label": "coach speaking",
+                     "hint": "just talk to interrupt", "level": 0.0,
+                     "user": "plan my next leg day",
+                     "reply": "Squats first, five sets of five, then Romanian "
+                              "deadlifts and a leg-press finisher."}))
+    out["mic_off"] = (figure(0.4), HudState(
+        **mic, chat={"status": "off", "label": "mic off",
+                     "hint": "voice extras not installed — type your question",
+                     "level": 0.0, "user": None, "reply": ""}))
     return out
 
 

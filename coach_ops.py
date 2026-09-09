@@ -471,6 +471,11 @@ def summarize_trace(rows: list[dict]) -> dict:
     acts = [r for r in rows if r.get("kind") == "action"]
     events = [r for r in rows if r.get("kind") == "event"]
     loops = [r for r in rows if r.get("kind") == "tool_loop"]
+    turns = [r for r in rows if r.get("kind") == "turn"]
+
+    def nums(key):
+        return [r[key] for r in turns if isinstance(r.get(key), (int, float))]
+    ttfa, stt, spoken = nums("ttfa_ms"), nums("stt_ms"), nums("speak_ms")
     ttft = [r["ttft_s"] for r in calls if isinstance(r.get("ttft_s"),
                                                        (int, float))]
     total = [r["total_s"] for r in calls if isinstance(r.get("total_s"),
@@ -513,6 +518,15 @@ def summarize_trace(rows: list[dict]) -> dict:
             for k in sorted({str(r.get("rounds")) for r in loops})},
         "events_queued": sum(1 for e in events if e.get("queued")),
         "events_dropped": sum(1 for e in events if not e.get("queued")),
+        # voice turn-taking (coach_voice): what the athlete waits for
+        "turns": len(turns),
+        "turns_voice": sum(1 for r in turns if r.get("source") == "voice"),
+        "turns_interrupted": sum(1 for r in turns if r.get("interrupted")),
+        "turns_no_audio": sum(1 for r in turns if r.get("ttfa_ms") is None),
+        "ttfa_p50_ms": percentile(ttfa, 0.5),
+        "ttfa_p95_ms": percentile(ttfa, 0.95),
+        "stt_p50_ms": percentile(stt, 0.5),
+        "spoken_p50_ms": percentile(spoken, 0.5),
     }
 
 
@@ -544,6 +558,13 @@ def format_report(summary: dict) -> str:
             f"{k}×{v}" for k, v in s["tool_loop_rounds"].items()))
     lines.append(f"- proactive events queued {s['events_queued']}, dropped "
                  f"{s['events_dropped']}")
+    if s.get("turns"):
+        lines.append(
+            f"- voice turns: {s['turns']} ({s['turns_voice']} spoken, "
+            f"{s['turns_interrupted']} interrupted, {s['turns_no_audio']} "
+            f"without audio); heard → first word p50/p95: "
+            f"{s['ttfa_p50_ms']} / {s['ttfa_p95_ms']} ms; transcription p50 "
+            f"{s['stt_p50_ms']} ms; answer spoken p50 {s['spoken_p50_ms']} ms")
     return "\n".join(lines)
 
 
@@ -729,6 +750,12 @@ def selftest():
         t.record("tool_loop", rounds=2)
         t.record("event", event="set_done", queued=True)
         t.record("event", event="set_done", queued=False)
+        t.record("turn", source="voice", words=5, stt_ms=420, ttfa_ms=2600,
+                 speak_ms=4100, interrupted=False, full_duplex=False)
+        t.record("turn", source="typed", words=3, stt_ms=None, ttfa_ms=9800,
+                 speak_ms=900, interrupted=True, full_duplex=False)
+        t.record("turn", source="typed", words=2, stt_ms=None, ttfa_ms=None,
+                 speak_ms=None, interrupted=False, full_duplex=False)
         s = summarize_trace(load_trace(p))
         assert s["llm_calls"] == 11 and s["errors"] == 1 and s["cancelled"] == 1
         assert s["ttft_p50_s"] == 0.9 and s["total_p95_s"] == 11.0, s
@@ -736,8 +763,13 @@ def selftest():
         assert s["actions"]["set_exercise"]["rejected"] == 1
         assert s["tool_loop_rounds"] == {"2": 1}
         assert s["events_queued"] == 1 and s["events_dropped"] == 1
+        assert s["turns"] == 3 and s["turns_voice"] == 1, s
+        assert s["turns_interrupted"] == 1 and s["turns_no_audio"] == 1
+        assert s["ttfa_p50_ms"] == 2600 and s["ttfa_p95_ms"] == 9800, s
+        assert s["stt_p50_ms"] == 420 and s["spoken_p50_ms"] == 900
         rep = format_report(s)
         assert "too_long×1" in rep and "set_exercise ok 0/rej 1" in rep
+        assert "voice turns: 3" in rep and "2600 / 9800 ms" in rep, rep
     print("ok")
 
     print("8b) live hints from environment/physics:", end=" ")

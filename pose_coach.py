@@ -1629,7 +1629,7 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
         model_file: str = MODEL_FILE, collect: str | None = None,
         program: str | None = None, sensors: str | None = None,
         camera: int | str = 0, mirror: bool = True,
-        load_kg: float | None = None):
+        load_kg: float | None = None, headset: bool = False):
     try:
         import cv2
     except ImportError:
@@ -1807,10 +1807,15 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
             speak=voice.say_chat, stop_speaking=voice.interrupt,
             tts_active=voice.is_speaking, hands_free=not headless,
             log_path=log_path,
-            on_action=lambda a: apply_chat_action(a, session_cfg))
-        if not headless:
+            on_action=lambda a: apply_chat_action(a, session_cfg),
+            full_duplex=headset)
+        if not headless and headset:
+            print("Headset mode: the mic stays open while the coach talks — "
+                  "just talk over it to interrupt ('c' works too).")
+        elif not headless:
             print("Press 'c' in the video window to interrupt the coach "
-                  "and ask right away.")
+                  "and ask right away; say 'more' to hear the rest of a "
+                  "long answer (--headset: interrupt by voice).")
         # opening line: connect to last time ("last session your knees
         # caved — watch that today"). Skipped silently on first-ever run.
         brief = coach_chat.last_session_brief(
@@ -1861,7 +1866,8 @@ def run(exercise: str, video: str | None, use_voice: bool, log_path: str,
                          f"{pst['set']}/{pst['sets']} · {pst['target']}")
         chat_info = None
         if chat:
-            chat_info = {"status": chat.status, "level": chat.mic_level,
+            chat_info = {"status": chat.status, "label": chat.label,
+                         "hint": chat.hint, "level": chat.mic_level,
                          "user": getattr(chat, "hud_user", None),
                          "reply": getattr(chat, "hud_reply", "")}
         vel_ratio = (1.0 - fatigue.loss) if len(fatigue.vels) >= 4 else None
@@ -3017,6 +3023,12 @@ if __name__ == "__main__":
                     help="conversational LLM coach: hands-free mic (just "
                          "speak), typed questions, or 'c' to interrupt "
                          "(see docs/COACH.md)")
+    ap.add_argument("--headset", action="store_true",
+                    default=os.environ.get("COACH_HEADSET", "") == "1",
+                    help="--coach with earbuds/headset: the mic stays open "
+                         "while the coach talks so you interrupt by voice "
+                         "(env COACH_HEADSET=1; python coach_voice.py "
+                         "--echo-check tells you if it is safe on speakers)")
     ap.add_argument("--record-reference", action="store_true",
                     help="save this set's best rep as the golden reference; "
                          "future sessions score every rep against it (DTW)")
@@ -3126,4 +3138,5 @@ if __name__ == "__main__":
             reference_file=args.reference_file, detector_kind=args.detector,
             model_file=args.model_file, collect=args.collect,
             program=args.program, sensors=args.sensors, camera=camera,
-            mirror=not args.no_mirror, load_kg=args.load)
+            mirror=not args.no_mirror, load_kg=args.load,
+            headset=args.headset)

@@ -340,17 +340,21 @@ struct WorkoutView: View {
 
     private var micPill: some View {
         let (label, color): (String, Color) = {
-            switch vm.speechIn.state {
+            switch vm.coach.turnState {
             case .hearing: return (NSLocalizedString("hearing you…", comment: ""), .cyan)
             case .listening: return (NSLocalizedString("listening", comment: ""), .green)
-            case .paused: return (NSLocalizedString("coach talking", comment: ""), .gray)
-            default: return (NSLocalizedString("mic off", comment: ""), .gray)
+            case .thinking: return (NSLocalizedString("thinking…", comment: ""), .orange)
+            case .speaking: return (vm.coach.fullDuplex
+                                    ? NSLocalizedString("coach talking · talk to interrupt", comment: "")
+                                    : NSLocalizedString("coach talking", comment: ""), .purple)
+            case .off: return (NSLocalizedString("mic off", comment: ""), .gray)
             }
         }()
+        let open = vm.coach.turnState == .listening || vm.coach.turnState == .hearing
         return HStack(spacing: 4) {
-            Image(systemName: "mic.fill")
+            Image(systemName: vm.coach.turnState == .speaking ? "speaker.wave.2.fill" : "mic.fill")
             Text(label).font(.caption2)
-            Capsule().fill(color).frame(width: CGFloat(4 + 16 * vm.speechIn.level), height: 4)
+            Capsule().fill(color).frame(width: CGFloat(4 + (open ? 16 * vm.speechIn.level : 0)), height: 4)
         }
         .font(.caption)
         .padding(.horizontal, 8).padding(.vertical, 3)

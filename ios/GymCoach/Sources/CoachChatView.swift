@@ -77,15 +77,19 @@ struct CoachChatView: View {
     private var composer: some View {
         VStack(spacing: 6) {
             if session.handsFreeOn {
-                HStack(spacing: 6) {
-                    Image(systemName: "mic.fill")
-                        .foregroundStyle(speechIn.state == .hearing ? .cyan
-                                         : speechIn.state == .listening ? .green : .secondary)
-                    Text(speechIn.state == .hearing && !speechIn.partial.isEmpty
-                         ? speechIn.partial
-                         : NSLocalizedString("Hands-free: just speak — the coach can't hear you while it talks", comment: ""))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                HStack(spacing: 8) {
+                    Image(systemName: session.turnState == .speaking ? "speaker.wave.2.fill" : "mic.fill")
+                        .foregroundStyle(turnColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(turnLabel).font(.caption.bold()).foregroundStyle(turnColor)
+                        Text(speechIn.state == .hearing && !speechIn.partial.isEmpty
+                             ? speechIn.partial : session.turnHint)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    }
                     Spacer()
+                    if speechIn.state == .listening || speechIn.state == .hearing {
+                        Capsule().fill(turnColor).frame(width: CGFloat(6 + 40 * speechIn.level), height: 4)
+                    }
                     micMenu
                 }
                 .padding(.horizontal)
@@ -126,6 +130,26 @@ struct CoachChatView: View {
             .padding([.horizontal, .bottom])
         }
         .background(.thinMaterial)
+    }
+
+    private var turnLabel: String {
+        switch session.turnState {
+        case .listening: return NSLocalizedString("Listening", comment: "")
+        case .hearing: return NSLocalizedString("Hearing you…", comment: "")
+        case .thinking: return NSLocalizedString("Thinking…", comment: "")
+        case .speaking: return NSLocalizedString("Coach speaking", comment: "")
+        case .off: return NSLocalizedString("Mic off", comment: "")
+        }
+    }
+
+    private var turnColor: Color {
+        switch session.turnState {
+        case .listening: return .green
+        case .hearing: return .cyan
+        case .thinking: return .orange
+        case .speaking: return .purple
+        case .off: return .secondary
+        }
     }
 
     private func send() {
@@ -177,6 +201,8 @@ struct CoachChatView: View {
 struct CoachSettingsView: View {
     @ObservedObject private var client = CoachClient.shared
     @StateObject private var mic = SpeechInput()
+    @AppStorage("coach.fullDuplex") private var fullDuplex = true
+    @AppStorage("coach.earcons") private var earcons = true
     @State private var checking = false
     @State private var url = ""
     @State private var code = ""
@@ -230,6 +256,14 @@ struct CoachSettingsView: View {
                 Text("Microphone")
             } footer: {
                 Text("Built-in, AirPods / Bluetooth headsets and wired or USB-C microphones. The camera is picked in the workout screen (🔄 button) — external USB-C cameras appear there on supported devices.")
+            }
+            Section {
+                Toggle("Interrupt by voice", isOn: $fullDuplex)
+                Toggle("Mic sounds", isOn: $earcons)
+            } header: {
+                Text("Talking over the coach")
+            } footer: {
+                Text("Interrupt by voice keeps the mic open while the coach talks (the phone cancels its own voice) — just talk over it. Turn it off if the coach keeps answering itself on a loud speaker: the mic then closes while it talks, it reads two sentences per answer and “more” fetches the rest. Mic sounds: a rising tone when the mic is yours, a tick when your sentence was captured.")
             }
             Section {
                 Text("What the coach sees: your live set (exercise, phase, reps, last rep's score, tempo and faults), your history and profile on the PC, and its knowledge base (form faults, programming, recovery, nutrition, 870+ exercises). It can switch exercise, set a rep goal, start a rest, set tempo, mute cues, log the load and run a guided program — say it and it happens.")

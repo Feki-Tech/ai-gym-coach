@@ -1,0 +1,72 @@
+{
+ "rate": 16000,
+ "fixtures": [
+  {
+   "file": "q_en_depth.wav",
+   "kind": "question",
+   "lang": "en",
+   "voice": "en-us",
+   "wpm": 130,
+   "text": "How deep should I squat?",
+   "max_wer": 0.34
+  },
+  {
+   "file": "q_en_knees.wav",
+   "kind": "question",
+   "lang": "en",
+   "voice": "en",
+   "wpm": 150,
+   "text": "Why do my knees cave in on the way up?",
+   "max_wer": 0.34
+  },
+  {
+   "file": "q_en_rest.wav",
+   "kind": "question",
+   "lang": "en",
+   "voice": "en-us",
+   "wpm": 130,
+   "text": "Give me two minutes of rest.",
+   "max_wer": 0.34
+  },
+  {
+   "file": "q_fr_dos.wav",
+   "kind": "question",
+   "lang": "fr",
+   "voice": "fr+f3",
+   "wpm": 120,
+   "text": "Pourquoi mon dos se penche en avant pendant les squats?",
+   "max_wer": 0.5,
+   "soft": true
+  },
+  {
+   "file": "q_ar_rest.wav",
+   "kind": "question",
+   "lang": "ar",
+   "voice": "ar",
+   "wpm": 140,
+   "text": "كم ثانية أرتاح بين المجموعات",
+   "max_wer": 0.6,
+   "soft": true
+  },
+  {
+   "file": "noise_gym.wav",
+   "kind": "noise"
+  },
+  {
+   "file": "noise_plate.wav",
+   "kind": "noise"
+  },
+  {
+   "file": "silence.wav",
+   "kind": "noise"
+  },
+  {
+   "file": "echo_coach.wav",
+   "kind": "echo",
+   "lang": "en",
+   "voice": "en",
+   "wpm": 150,
+   "text": "Push your knees out over your toes and keep your chest up."
+  }
+ ]
+}
